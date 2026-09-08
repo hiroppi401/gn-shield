@@ -5,6 +5,13 @@ Format mengikuti gaya Keep a Changelog. Setiap perubahan pada dokumen inti (`PRD
 ## [Unreleased]
 
 ### Ditambahkan
+- **Fase 1 Selesai (Linux: Deteksi File Dasar & Integrasi YARA-X)**:
+  - Integrasi engine YARA-X (pure Rust) dan penghitungan SHA-256 streaming di `gn-shield-rules`.
+  - Database reputasi hash lokal (`HashReputationStore`) untuk hash malware yang sudah dikenal.
+  - Deteksi signature standar EICAR antivirus test file terverifikasi.
+  - Implementasi sensor filesystem inotify di Linux via `gn-shield-sensors-linux` (crate `notify`).
+  - Implementasi pipeline evaluasi file bertingkat (`FileScanner`) di `gn-shield-core`: Layer 0 short-circuit Tier 1 Hash Allowlist, Tier 3 Path Allowlist, Hash Reputation, dan YARA-X scanning.
+  - Parser konfigurasi TOML (`GnShieldConfig`) dengan dukungan allowlist di `gn-shield-config`.
 - **Penetapan Nama Resmi: GN-Shield** (sebelumnya bernama Vigil). Struktur crate diperbarui menjadi prefix `gn-shield-*`.
 - **Inisialisasi Repositori Git**: remote origin dikonfigurasi ke `git@github.com:hiroppi401/gn-shield.git`.
 - **Script Build & Verifikasi Lokal**: penambahan `build.sh` untuk standarisasi format, linter clippy, dan testing tanpa ketergantungan CI eksternal.

@@ -6,3 +6,6 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+sha2 = { workspace = true }
+hex = { workspace = true }
+yara-x = { workspace = true }

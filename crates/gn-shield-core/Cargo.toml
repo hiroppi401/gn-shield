@@ -7,6 +7,10 @@ rust-version.workspace = true
 
 [dependencies]
 gn-shield-sensors-common = { path = "../gn-shield-sensors-common" }
+gn-shield-sensors-linux = { path = "../gn-shield-sensors-linux" }
 gn-shield-config = { path = "../gn-shield-config" }
 gn-shield-storage = { path = "../gn-shield-storage" }
 gn-shield-rules = { path = "../gn-shield-rules" }
+
+[dev-dependencies]
+tempfile = "3"
