@@ -1,0 +1,30 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/gn-shield-core",
+    "crates/gn-shield-sensors-common",
+    "crates/gn-shield-sensors-linux",
+    "crates/gn-shield-sensors-windows",
+    "crates/gn-shield-sensors-macos",
+    "crates/gn-shield-rules",
+    "crates/gn-shield-dns",
+    "crates/gn-shield-storage",
+    "crates/gn-shield-cli",
+    "crates/gn-shield-config",
+    "crates/gn-shield-native-host",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+authors = ["GN-Shield Contributors"]
+license = "GPL-3.0-or-later"
+repository = "https://github.com/hiroppi401/gn-shield"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

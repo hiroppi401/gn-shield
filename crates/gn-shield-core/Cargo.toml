@@ -1,0 +1,12 @@
+[package]
+name = "gn-shield-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+gn-shield-sensors-common = { path = "../gn-shield-sensors-common" }
+gn-shield-config = { path = "../gn-shield-config" }
+gn-shield-storage = { path = "../gn-shield-storage" }
+gn-shield-rules = { path = "../gn-shield-rules" }
