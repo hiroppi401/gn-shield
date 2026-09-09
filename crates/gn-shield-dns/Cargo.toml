@@ -6,3 +6,14 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+gn-shield-config = { path = "../gn-shield-config" }
+psl = "2.1"
+publicsuffix = "2.3"
+hickory-proto = "0.25"
+hickory-resolver = "0.25"
+tokio = { version = "1", features = ["rt", "macros", "net", "io-util", "time", "sync"] }
+thiserror = "2.0"
+serde = { workspace = true }
+serde_json = { workspace = true }
+[dev-dependencies]
+tempfile = "3"

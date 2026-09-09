@@ -1,6 +1,6 @@
 # Decision Engine Specification
 
-Dokumen ini adalah spesifikasi mengikat untuk komponen paling sensitif di Vigil: mesin yang memutuskan apakah sesuatu di-allow, di-block, atau ditanyakan ke user. Perubahan di sini berdampak langsung ke false positive rate dan ke risiko keamanan, jadi setiap perubahan harus melalui review eksplisit, lihat `AGENTS.md` bagian 4.
+Dokumen ini adalah spesifikasi mengikat untuk komponen paling sensitif di GN-Shield: mesin yang memutuskan apakah sesuatu di-allow, di-block, atau ditanyakan ke user. Perubahan di sini berdampak langsung ke false positive rate dan ke risiko keamanan, jadi setiap perubahan harus melalui review eksplisit, lihat `AGENTS.md` bagian 4.
 
 ## 1. Tujuan Desain
 
@@ -122,7 +122,7 @@ cidr = "2001:db8::/32"
 reason = "contoh entry IPv6, format sama dengan IPv4, wajib didukung sama lengkapnya"
 ```
 
-Daftar default ini dikirim bersama instalasi awal Vigil (lihat bagian 6), bukan sesuatu yang harus user tambahkan manual sejak hari pertama.
+Daftar default ini dikirim bersama instalasi awal GN-Shield (lihat bagian 6), bukan sesuatu yang harus user tambahkan manual sejak hari pertama.
 
 **Cara matching wajib berbasis eTLD+1 yang dihitung lewat Public Suffix List (PSL), bukan string suffix naif.** Pattern seperti `*.trycloudflare.com` harus dicocokkan dengan memecah hostname menjadi label (dipisah titik) dan membandingkan tepat pada batas label, bukan sekadar `hostname.ends_with(".trycloudflare.com")` pada level string mentah. Perbedaan ini penting karena string matching naif rentan terhadap domain yang sengaja dibuat mirip (misal domain attacker yang confusingly menyertakan `trycloudflare.com` sebagai bagian nama tanpa jadi eTLD+1 yang sebenarnya). Implementasi PSL memakai dua lapis (compiled-in `psl` sebagai fallback, `publicsuffix` untuk parsing list yang disegarkan Update Service di runtime), lihat `docs/ARCHITECTURE.md` bagian 3.7 untuk desain lengkapnya, supaya freshness PSL tidak bergantung pada rebuild binary manual.
 
@@ -177,6 +177,8 @@ Kalau implementasi ternyata menyatukan ketiga detektor ini di satu jalur kode ya
 **Sinyal cryptomining tersembunyi (miner yang menghindari blocklist domain/IP standar)**: CPU tinggi berkelanjutan (misal di atas ambang tertentu selama beberapa menit terus-menerus) dari proses yang TIDAK ada di allowlist hash/publisher, DIKOMBINASIKAN dengan pola koneksi mirip protokol Stratum (`stratum+tcp://`, `stratum+ssl://`) atau koneksi persisten ke port non-standar yang tidak cocok pola traffic normal. **CPU tinggi sendirian, tanpa sinyal lain, WAJIB diberi bobot rendah dan tidak boleh cukup untuk memicu aksi apapun**, supaya beban kerja compute berat legitimate (render, training ML, compile besar) tidak salah tangkap. Sinyal ini hanya jadi signifikan kalau dikombinasikan dengan minimal satu sinyal lain (koneksi mencurigakan, proses tanpa hash reputation dikenal, dsb), konsisten dengan formula berbobot di bagian 4 yang memang mensyaratkan kombinasi sinyal untuk melewati threshold.
 - `allowlist_override`, hasil lookup terhadap tier allowlist (Tier 1 sampai 4, termasuk Tier 3b sebagai cache sementara). Kalau ada match di tier manapun (termasuk cache yang masih dalam TTL), ini langsung dipakai, sinyal lain diabaikan untuk keputusan (tapi tetap dicatat di log untuk audit). Urutan lookup: Tier 1 (hash) dan reputasi malware dicek lebih dulu tanpa syarat (supaya `KnownBad` selalu bisa override apapun), baru kemudian Tier 2/3/3b/4 untuk menentukan `Trusted`.
 
+**Penting, arah nilai ketiga sinyal numerik (wajib konsisten, sering disalahpahami)**: `static_score`, `hash_reputation`, dan `behavior_score` SEMUANYA searah "makin tinggi makin mencurigakan/jahat", 0.0 berarti bersih/tidak ada indikasi/tidak dikenal, 1.0 berarti indikasi ancaman maksimal. Tidak ada satupun dari ketiganya yang berarti "makin tinggi makin dipercaya", arah itu HANYA ada di `allowlist_override = TrustLevel::Trusted`, jalur yang sepenuhnya terpisah dari scoring numerik. Konsekuensinya: `hash_reputation` yang bernilai pecahan (misal 0.85, fuzzy/partial match yang belum cukup exact untuk jadi `KnownBad`) tetap sinyal MENCURIGAKAN, bukan sinyal "cukup dipercaya", dan wajib dilindungi ceiling/veto gate yang sama seperti `static_score` di bagian 4 (keduanya berbobot sama, 0.4), supaya tidak "terlarut" jadi Allow kalau sinyal lain kebetulan 0.0. Implementasi yang menafsirkan `hash_reputation` tinggi sebagai "boleh di-auto-allow" adalah kesalahan arah yang serius dan harus segera diperbaiki kalau ditemukan.
+
 ## 4. Formula dan Threshold (Baseline, Bisa Disetel Lewat Config)
 
 ```rust
@@ -199,8 +201,8 @@ fn decide(v: &Verdict) -> Action {
     if v.behavior_score >= 0.9 {
         return Action::Block; // Perilaku sangat berbahaya (misal: process injection terkonfirmasi, credential dumping)
     }
-    if v.behavior_score >= 0.7 || v.static_score >= 0.8 {
-        return Action::PromptUser; // Sinyal statis atau behavioral kuat wajib ditinjau, tidak boleh jatuh ke Allow
+    if v.behavior_score >= 0.7 || v.static_score >= 0.8 || v.hash_reputation >= 0.8 {
+        return Action::PromptUser; // Sinyal statis, behavioral, atau hash-reputation kuat wajib ditinjau, tidak boleh jatuh ke Allow
     }
 
     let total = v.static_score * 0.4
@@ -231,7 +233,7 @@ Di luar tiga kasus ini, aksi default adalah PromptUser, tidak boleh Block otomat
 
 ## 6. Default Ruleset Saat Instalasi (Learning Mode)
 
-Saat instalasi pertama, Vigil melakukan:
+Saat instalasi pertama, GN-Shield melakukan:
 
 1. Scan daftar package terinstal lewat package manager sistem.
 2. Cocokkan dengan daftar known developer tools bawaan (termasuk namun tidak terbatas pada: cloudflared, ngrok, Tailscale, Docker, Podman, git, node/npm, cargo/rustup, python/pip, browser umum seperti Firefox dan Chromium).
@@ -250,7 +252,7 @@ Setiap keputusan (Allow, Block, PromptUser beserta jawaban user) harus dicatat d
 - Aksi akhir yang diambil
 - Alasan dalam bahasa manusia, bukan cuma angka (contoh: "Diblokir karena honeypot file berubah dan entropy shift terdeteksi pada 340 file dalam 4 detik")
 
-Log ini harus bisa diakses lewat `vigil-cli` dan dipakai sebagai bahan investigasi kalau user melaporkan false positive, supaya penyebabnya bisa ditelusuri dan dijadikan test case regresi baru.
+Log ini harus bisa diakses lewat `gn-shield-cli` dan dipakai sebagai bahan investigasi kalau user melaporkan false positive, supaya penyebabnya bisa ditelusuri dan dijadikan test case regresi baru.
 
 ## 8. Proses Menambah Aturan Allowlist Default Baru
 
@@ -275,14 +277,14 @@ Bagian 5 mendefinisikan KAPAN status `Block` diberikan untuk kasus confidence ti
 
 **Tahap 2, Terminate (setelah containment selesai)**:
 6. Hentikan seluruh process tree yang sudah ter-contain (PID awal plus semua descendant yang ikut ter-contain di poin 4).
-7. Quarantine file: pindahkan ke lokasi karantina, rename dengan ekstensi aman, cabut bit executable. Simpan metadata asli (path, timestamp, hash, alasan) supaya bisa direstore lewat `vigil-cli` kalau ternyata false positive. Ini konsisten dengan prinsip reversibilitas di `AGENTS.md` bagian 1 poin 3.
+7. Quarantine file: pindahkan ke lokasi karantina, rename dengan ekstensi aman, cabut bit executable. Simpan metadata asli (path, timestamp, hash, alasan) supaya bisa direstore lewat `gn-shield-cli` kalau ternyata false positive. Ini konsisten dengan prinsip reversibilitas di `AGENTS.md` bagian 1 poin 3.
 8. **Kasus file sudah dihapus sendiri (self-delete evasion)**: kalau file di disk sudah tidak ada saat proses terdeteksi, quarantine otomatis turun jadi cukup menghentikan proses. Dicatat di audit log sebagai sinyal tersendiri yang bisa memengaruhi scoring proses terkait.
 9. **Notifikasi setelah tindakan**: sesuai kategori confidence tinggi, tidak menunggu konfirmasi user dulu, tapi user tetap diberi tahu segera sesudahnya (proses apa yang di-contain lalu dihentikan, file mana yang dikarantina), lihat `PRD.md` bagian 7.2.
 
 **Pengaman wajib (safety guard), bukan opsional**:
 
 - **Cek flag critical process sebelum terminate (Windows)**: Windows menandai sejumlah proses sebagai "critical process" di level kernel, memanggil `TerminateProcess` terhadap proses semacam ini menyebabkan seluruh sistem bugcheck (BSOD), bukan cuma proses itu yang mati. Implementasi WAJIB mengecek flag ini dulu sebelum eksekusi terminate, meski secara teori hash malware seharusnya tidak pernah cocok dengan proses sistem asli, ini pengaman lapis kedua terhadap kemungkinan false match yang tidak terduga.
-- **Circuit breaker untuk mass-kill**: kalau lebih dari ambang tertentu (baseline: 5 proses) ter-auto-terminate dalam window waktu singkat (baseline: 60 detik), sistem WAJIB berhenti melanjutkan aksi auto-kill lebih lanjut dan masuk mode aman (cuma log dan notifikasi, minta konfirmasi manual untuk tindakan berikutnya). Alasan: lonjakan deteksi confidence tinggi di banyak proses berbeda dalam waktu singkat jauh lebih mungkin disebabkan data hash reputation yang buruk (dari update yang bermasalah) daripada infeksi multi-proses sungguhan, dan melanjutkan auto-kill tanpa jeda dalam situasi itu berisiko membuat Vigil sendiri jadi penyebab kerusakan/downtime ke sistem user, bertentangan langsung dengan prinsip "diam lebih baik daripada salah" di `README.md`. Ambang ini dikonfigurasi (`docs/CONFIG_SCHEMA.md`), bukan hardcoded.
+- **Circuit breaker untuk mass-kill**: kalau lebih dari ambang tertentu (baseline: 5 proses) ter-auto-terminate dalam window waktu singkat (baseline: 60 detik), sistem WAJIB berhenti melanjutkan aksi auto-kill lebih lanjut dan masuk mode aman (cuma log dan notifikasi, minta konfirmasi manual untuk tindakan berikutnya). Alasan: lonjakan deteksi confidence tinggi di banyak proses berbeda dalam waktu singkat jauh lebih mungkin disebabkan data hash reputation yang buruk (dari update yang bermasalah) daripada infeksi multi-proses sungguhan, dan melanjutkan auto-kill tanpa jeda dalam situasi itu berisiko membuat GN-Shield sendiri jadi penyebab kerusakan/downtime ke sistem user, bertentangan langsung dengan prinsip "diam lebih baik daripada salah" di `README.md`. Ambang ini dikonfigurasi (`docs/CONFIG_SCHEMA.md`), bukan hardcoded.
 
 ## 10. Fan-Out Proses (Mass Child Spawning) Sebagai Sinyal, dan Allowlist untuk App Multi-Proses Legitimate
 
@@ -309,3 +311,31 @@ high_fanout_expected = true
 ```
 
 **Batas penting supaya tidak jadi celah bypass**: flag ini HANYA meredam satu sinyal spesifik (jumlah child process) untuk komputasi `behavior_score` proses ANAK yang lineage-nya berasal dari proses trusted ini. Flag ini TIDAK meng-exempt child process dari pengecekan lain apapun (static scan, hash reputation, sinyal behavior lain seperti network/file access mencurigakan). Kalau ada child process yang memang jahat (misal ekstensi browser disusupi, atau container berisi malware), dia tetap terdeteksi lewat sinyalnya sendiri, cuma tidak otomatis ikut dicurigai semata-mata karena "induknya banyak anak". Default list untuk browser umum dan container runtime dikirim sebagai bagian dari `default-allowlist.toml` (bagian 6), diupdate lewat Update Service seperti aturan default lain, bukan sesuatu yang user harus tambahkan manual sejak hari pertama.
+
+## 11. Pengelompokan (Batching) Notifikasi Ambigu (PromptUser)
+
+### 11.1 Masalah Alert Fatigue pada Sesi Aktivitas Terkait
+Saat pengguna melakukan instalasi tool baru atau menjalankan workflow kompleks (misal running development pipeline lokal yang memicu beberapa proses anak atau permintaan domain baru sekaligus), serangkaian event ambigu berkategori `PromptUser` dapat muncul dalam rentang waktu yang sangat rapat. Menampilkan popup terpisah untuk setiap event memicu alert fatigue hebat dan mendorong pengguna mengabaikan atau menyetujui semuanya secara membabi-buta.
+
+### 11.2 Kriteria dan Mekanisme Pengelompokan
+Pengelompokan notifikasi diatur melalui konfigurasi `[notifications]` dengan aturan deterministik:
+
+1. **Jendela Waktu (Sliding Batch Window)**:
+   Default bernilai `1000` milidetik (`batch_window_ms = 1000`). Setiap event `PromptUser` yang masuk menginisiasi atau memperpanjang timer pengumpulan selama window aktif.
+2. **Kunci Pengelompokan (Grouping Key)**:
+   Event dikelompokkan berdasarkan relasi proses induk: `parent_pid` (atau `parent_name` / `session_id`). Jika parent PID sama atau tergolong dalam tree instalasi yang sama, seluruh item diagregasikan ke dalam satu batch descriptor.
+3. **Ambang Pengelompokan (Batch Threshold)**:
+   Jika dalam jendela waktu terkumpul event sejumlah `>= batch_threshold_count` (default 2), sistem tidak memancarkan notifikasi individual, melainkan menggabungkannya ke dalam notifikasi ringkasan tunggal. Jika hanya ada 1 event hingga jendela waktu berakhir, notifikasi dipancarkan sebagai notifikasi tunggal biasa.
+
+### 11.3 Format Notifikasi Ringkasan dan Aksi Pengguna
+Notifikasi ringkasan menyajikan daftar ringkas dari event yang tertahan:
+- **Judul**: `GN-Shield: {N} Aktivitas Baru Membutuhkan Izin`
+- **Isi**: `Proses '{parent_name}' (PID {parent_pid}) memicu aktivitas:\n- {target_1}\n- {target_2} ...`
+- **Aksi Tersedia**:
+  - `Allow All Once`: Mengizinkan seluruh target dalam batch untuk eksekusi saat ini secara temporer.
+  - `Always Allow All`: Menambahkan seluruh target dalam batch ke dynamic allowlist.
+  - `Block All`: Memblokir seluruh target dalam batch secara aman.
+  - `Review Individually`: Membuka tampilan detail per-item di `gn-shield-cli review`.
+
+### 11.4 Penanganan Timeout (Safety Guard)
+Jika dialog notifikasi batch tidak direspons oleh pengguna dalam `prompt_timeout_seconds` (default 60 detik), sistem menerapkan `default_action_on_timeout` (default `allow_once`). Sesuai prinsip reversibilitas pada `AGENTS.md` bagian 1 poin 3, sistem dilarang keras menerapkan auto-block permanen pada kondisi timeout ambigu.

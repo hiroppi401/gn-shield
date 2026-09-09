@@ -1,5 +1,17 @@
 //! Rule and signature matching engine for GN-Shield.
-//! Integrates SHA-256 hash calculation, local hash reputation store, and YARA-X scanning.
+//! Integrates SHA-256 hash calculation, local hash reputation store, YARA-X scanning, Shannon entropy, and honeypots.
+
+pub mod breach;
+pub mod entropy;
+pub mod honeypot;
+pub mod sensitive_data;
+
+pub use breach::{BreachMatchResult, KAnonymityChecker};
+pub use entropy::{
+    calculate_file_entropy, is_high_entropy, is_significant_entropy_shift, shannon_entropy,
+};
+pub use honeypot::{HoneypotManager, CANARY_FILENAMES, CANARY_TOKEN};
+pub use sensitive_data::{SensitiveDataDetector, SensitiveDataKind, SensitiveFinding};
 
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;

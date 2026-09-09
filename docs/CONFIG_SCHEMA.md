@@ -1,12 +1,12 @@
 # Config Schema Reference
 
-Vigil dikonfigurasi lewat file TOML. Dokumen ini adalah referensi skema lengkap. Kalau menambah field baru ke konfigurasi, update dokumen ini di pull request yang sama, jangan terpisah.
+GN-Shield dikonfigurasi lewat file TOML. Dokumen ini adalah referensi skema lengkap. Kalau menambah field baru ke konfigurasi, update dokumen ini di pull request yang sama, jangan terpisah.
 
 ## 1. Lokasi File Config
 
-- Linux: `/etc/vigil/config.toml` (sistem wide), `$XDG_CONFIG_HOME/vigil/config.toml` (per user, override sistem wide)
-- Windows: `%PROGRAMDATA%\Vigil\config.toml`
-- macOS: `/Library/Application Support/Vigil/config.toml`
+- Linux: `/etc/gn-shield/config.toml` (sistem wide), `$XDG_CONFIG_HOME/gn-shield/config.toml` (per user, override sistem wide)
+- Windows: `%PROGRAMDATA%\GN-Shield\config.toml`
+- macOS: `/Library/Application Support/GN-Shield/config.toml`
 
 Config per user selalu override config sistem wide untuk field yang sama, kecuali field yang eksplisit ditandai `locked = true` oleh admin (lihat bagian 13).
 
@@ -83,7 +83,7 @@ enabled = true
 enforce_domain_blocklist = true
 form_action_mismatch_heuristic = true
 trusted_identity_providers = ["accounts.google.com", "login.microsoftonline.com", "github.com", "appleid.apple.com", "*.okta.com", "*.auth0.com"]
-blocklist_refresh_via = "vigil-core"    # ekstensi tidak fetch sendiri, selalu lewat native messaging ke vigil-core
+blocklist_refresh_via = "gn-shield-core"    # ekstensi tidak fetch sendiri, selalu lewat native messaging ke gn-shield-core
 
 [notifications]
 style = "native"                # native, minimal, silent_log_only
@@ -132,7 +132,7 @@ default_action_on_timeout = "allow_once"   # jangan pernah "block" tanpa konfirm
 | `blocklist_sources` | array | `["urlhaus", "phishtank", "coinblockerlists"]` | Sumber blocklist reputasi domain/URL. `coinblockerlists` khusus domain mining pool dikenal |
 | `psl_stale_warning_days` | integer | `45` | Ambang hari untuk warning kalau lapis dinamis Public Suffix List belum berhasil refresh, lihat `docs/ARCHITECTURE.md` bagian 3.7 |
 | `integration_mode` | string | `"auto"` | `auto` mendeteksi resolver lain saat instalasi dan menyajikan pilihan ke user, atau override manual: `takeover`, `chain_upstream`, `disabled`, lihat `docs/ARCHITECTURE.md` bagian 3.7 |
-| `chain_upstream_listen_port` | integer | `5353` | Port lokal yang dipakai Vigil kalau `integration_mode = chain_upstream`, supaya tidak berebut port 53 dengan resolver/proxy lain yang sudah ada |
+| `chain_upstream_listen_port` | integer | `5353` | Port lokal yang dipakai GN-Shield kalau `integration_mode = chain_upstream`, supaya tidak berebut port 53 dengan resolver/proxy lain yang sudah ada |
 
 ## 7. Detail Field `[ip_reputation_filter]`
 
@@ -156,11 +156,11 @@ default_action_on_timeout = "allow_once"   # jangan pernah "block" tanpa konfirm
 
 | Field | Tipe | Default | Keterangan |
 |---|---|---|---|
-| `enabled` | bool | `true` | Mengaktifkan integrasi native messaging dengan `vigil-browser-extension`, lihat `docs/ARCHITECTURE.md` bagian 3.9 |
+| `enabled` | bool | `true` | Mengaktifkan integrasi native messaging dengan `gn-shield-browser-extension`, lihat `docs/ARCHITECTURE.md` bagian 3.9 |
 | `enforce_domain_blocklist` | bool | `true` | Enforce blocklist domain reputasi (phishing, mining pool) di level page-load lewat ekstensi |
 | `form_action_mismatch_heuristic` | bool | `true` | Aktifkan heuristik form login yang submit ke origin berbeda |
 | `trusted_identity_providers` | array | lihat contoh di bagian 2 | Domain identity provider yang dikecualikan dari heuristik form-action-mismatch supaya SSO/OAuth normal tidak salah tangkap |
-| `blocklist_refresh_via` | string | `"vigil-core"` | Sumber refresh blocklist untuk ekstensi, selalu lewat native messaging ke `vigil-core`, tidak pernah fetch langsung dari ekstensi ke server luar |
+| `blocklist_refresh_via` | string | `"gn-shield-core"` | Sumber refresh blocklist untuk ekstensi, selalu lewat native messaging ke `gn-shield-core`, tidak pernah fetch langsung dari ekstensi ke server luar |
 
 ## 10. Detail Field `[notifications]`
 
@@ -169,6 +169,19 @@ default_action_on_timeout = "allow_once"   # jangan pernah "block" tanpa konfirm
 | `style` | string | `"native"` | `native` (notifikasi OS standar), `minimal` (indikator kecil tanpa popup mengganggu), `silent_log_only` (tidak ada notifikasi visual, cuma tercatat di audit log, untuk user yang tidak ingin terganggu sama sekali) |
 | `prompt_timeout_seconds` | integer | `60` | Waktu tunggu sebelum `default_action_on_timeout` berlaku untuk kasus `PromptUser` yang tidak dijawab |
 | `default_action_on_timeout` | string | `"allow_once"` | Aksi default kalau user tidak merespons prompt dalam `prompt_timeout_seconds`. WAJIB `allow_once` atau setara yang reversibel, TIDAK BOLEH bernilai yang setara dengan block permanen otomatis tanpa konfirmasi, lihat `AGENTS.md` bagian 1 poin 3 dan validasi di bagian 12 |
+| `batching_enabled` | bool | `true` | Mengaktifkan pengelompokan (batching) notifikasi ambigu berurutan untuk mencegah alert fatigue, lihat `docs/DECISION_ENGINE.md` bagian 11 |
+| `batch_window_ms` | integer | `1000` | Jendela waktu pengumpulan event ambigu sebelum notifikasi ringkasan dipancarkan |
+| `batch_threshold_count` | integer | `2` | Jumlah minimum event ambigu dalam jendela waktu untuk memicu penggabungan menjadi notifikasi ringkasan tunggal |
+
+## 10b. Detail Field `[data_breach]`
+
+| Field | Tipe | Default | Keterangan |
+|---|---|---|---|
+| `enabled` | bool | `false` | Default OFF. Wajib opt-in eksplisit oleh pengguna, lihat `docs/THREAT_MODEL.md` bagian 2.4 |
+| `scan_clipboard` | bool | `false` | Default OFF. Wajib opt-in eksplisit karena membaca clipboard memiliki implikasi privasi |
+| `scan_uploads` | bool | `false` | Default OFF. Wajib opt-in eksplisit untuk mendeteksi token/kunci privat yang diunggah |
+| `k_anonymity_api_url` | string | `"https://api.pwnedpasswords.com/range/"` | Endpoint k-anonymity (hanya query 5 karakter prefix hash SHA-1, data mentah tidak pernah keluar mesin) |
+| `check_timeout_ms` | integer | `3000` | Batas waktu tunggu jaringan untuk query range k-anonymity |
 
 ## 11. Detail Field `[scoring]`
 
@@ -176,7 +189,7 @@ Lihat `docs/DECISION_ENGINE.md` bagian 4 untuk penjelasan formula. Field di sini
 
 ## 12. Validasi Config
 
-`vigil-config` wajib melakukan validasi berikut saat parsing, dan menolak start daemon (fail closed ke kondisi aman, bukan fail open tanpa proteksi) kalau validasi gagal:
+`gn-shield-config` wajib melakukan validasi berikut saat parsing, dan menolak start daemon (fail closed ke kondisi aman, bukan fail open tanpa proteksi) kalau validasi gagal:
 
 - Jumlah `weight_*` di `[scoring]` harus sama dengan 1.0 (dengan toleransi floating point kecil).
 - `threshold_block` harus lebih besar dari `threshold_prompt`.

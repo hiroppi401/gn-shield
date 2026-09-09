@@ -1,0 +1,64 @@
+# ==============================================================================
+# GN-Shield: cargo-deny configuration (v0.20+)
+# ==============================================================================
+
+[graph]
+targets = [
+    { triple = "x86_64-unknown-linux-gnu" },
+]
+
+[advisories]
+ignore = [
+    # hickory-dns transitive advisories
+    "RUSTSEC-2026-0118", # hickory-proto: NSEC3 closest-encloser unbounded loop (no fix available)
+    "RUSTSEC-2026-0119", # hickory-proto: CPU exhaustion during message encoding (pending upstream upgrade)
+
+    # yara-x transitive advisories (via wasmtime 26.0.1 and rsa 0.9.10)
+    "RUSTSEC-2023-0071", # rsa: Marvin Attack (transitive via yara-x 0.12, no fix available)
+    "RUSTSEC-2026-0092", # wasmtime: Panic when transcoding misaligned component model UTF-16
+    "RUSTSEC-2026-0093", # wasmtime: Heap OOB read in component model UTF-16 to latin1+utf16
+    "RUSTSEC-2026-0094", # wasmtime: Improperly masked return value from table.grow with Winch
+    "RUSTSEC-2026-0095", # wasmtime: Wasmtime with Winch compiler backend sandbox escape
+    "RUSTSEC-2026-0096", # wasmtime: Miscompiled guest heap access enables sandbox escape on aarch64
+    "RUSTSEC-2026-0222", # wasmtime: Stores can mix up type indices between engines
+    "RUSTSEC-2025-0046", # wasmtime: Host panic with fd_renumber WASIp1 function
+    "RUSTSEC-2025-0118", # wasmtime: Unsound API access to a WebAssembly shared linear memory
+    "RUSTSEC-2026-0020", # wasmtime: Guest-controlled resource exhaustion in WASI implementations
+    "RUSTSEC-2026-0021", # wasmtime: Panic adding excessive fields to a wasi:http/types.fields instance
+    "RUSTSEC-2026-0085", # wasmtime: Panic when lifting flags component value
+    "RUSTSEC-2026-0086", # wasmtime: Host data leakage with 64-bit tables and Winch
+    "RUSTSEC-2026-0087", # wasmtime: Wasmtime segfault or unused out-of-sandbox load with f64x2.splat
+    "RUSTSEC-2026-0088", # wasmtime: Data leakage between pooling allocator instances
+    "RUSTSEC-2026-0089", # wasmtime: Host panic when Winch compiler executes table.fill
+    "RUSTSEC-2026-0091", # wasmtime: Out-of-bounds write or crash when transcoding component model strings
+    "RUSTSEC-2026-0269", # wasmtime: Filesystem sandbox escape when paths contain trailing slashes
+
+    # Unmaintained warnings on legacy indirect dependencies
+    "RUSTSEC-2025-0141", # bincode: unmaintained warning
+    "RUSTSEC-2024-0436", # paste: unmaintained warning
+]
+
+[licenses]
+allow = [
+    "GPL-3.0-or-later",
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "CC0-1.0",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+deny = []
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"
+allow-git = []

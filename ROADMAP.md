@@ -7,70 +7,71 @@ Urutan fase ini mengikuti prioritas di `PRD.md`. Jangan mulai fase berikutnya se
 Tujuan: kerangka proyek siap, keputusan arsitektur mengambang di `docs/ARCHITECTURE.md` bagian 6 sudah diputuskan.
 
 Kriteria selesai:
-- Workspace Cargo dengan struktur crate sesuai `docs/ARCHITECTURE.md` bagian 2 sudah dibuat, boleh kosong isinya dulu.
-- Format IPC antara core dan CLI sudah diputuskan dan didokumentasikan.
-- `cargo audit` dan `cargo deny` sudah tersetup di CI.
-- CI dasar jalan (build, clippy, fmt check) untuk target Linux.
+- [x] Workspace Cargo dengan struktur crate sesuai `docs/ARCHITECTURE.md` bagian 2 sudah dibuat, boleh kosong isinya dulu.
+- [x] Format IPC antara core dan CLI sudah diputuskan dan didokumentasikan.
+- [x] `cargo audit` dan `cargo deny` sudah tersetup di CI.
+- [x] CI dasar jalan (build, clippy, fmt check) untuk target Linux.
 
-## Fase 1: Linux, Deteksi File Dasar
+## Fase 1: Linux, Deteksi File Dasar (Selesai)
 
-Tujuan: `vigil-core` bisa memantau filesystem dan melakukan hash/signature check dasar di Linux, tanpa fitur ransomware/DNS/network dulu.
-
-Kriteria selesai:
-- Sensor filesystem Linux (inotify minimal, fanotify sebagai target) terhubung ke `vigil-core`.
-- Integrasi YARA-X dan hash reputation lokal berjalan.
-- Decision Engine versi awal (tanpa behavior_score dulu, cukup static_score dan hash_reputation) mengembalikan Allow/Block/PromptUser.
-- Tier 1 dan Tier 3 allowlist (`docs/DECISION_ENGINE.md`) berfungsi.
-- Resource usage idle diukur dan didokumentasikan, dibandingkan terhadap target `PRD.md` bagian 6.1.
-- Test EICAR (file test standar industri untuk uji antivirus, bukan malware sungguhan) terdeteksi dengan benar.
-
-## Fase 2: Linux, Anti False Positive dan Ransomware
-
-Tujuan: menambah kemampuan yang jadi pembeda utama Vigil.
+Tujuan: `gn-shield-core` bisa memantau filesystem dan melakukan hash/signature check dasar di Linux, tanpa fitur ransomware/DNS/network dulu.
 
 Kriteria selesai:
-- Honeypot file dan deteksi entropy shift untuk ransomware berfungsi.
-- Tier 5 exclusion (`node_modules`, `.git`, `target`, dsb) berfungsi dengan sensitivity reduced, bukan disabled total.
-- eBPF process monitoring via `aya` terintegrasi untuk `behavior_score`.
-- Suite regresi false positive (`PRD.md` bagian 6.4) dijalankan dan lulus semua skenario untuk platform Linux.
-- Learning mode saat instalasi (scan package manager, batch approve) berfungsi.
+- [x] Sensor filesystem Linux (inotify minimal, fanotify sebagai target) terhubung ke `gn-shield-core`.
+- [x] Integrasi YARA-X dan hash reputation lokal berjalan.
+- [x] Decision Engine versi awal (tanpa behavior_score dulu, cukup static_score dan hash_reputation) mengembalikan Allow/Block/PromptUser.
+- [x] Tier 1 dan Tier 3 allowlist (`docs/DECISION_ENGINE.md`) berfungsi.
+- [x] Resource usage idle diukur dan didokumentasikan, dibandingkan terhadap target `PRD.md` bagian 6.1.
+- [x] Test EICAR (file test standar industri untuk uji antivirus, bukan malware sungguhan) terdeteksi dengan benar.
 
-## Fase 3: Linux, DNS Filter dan Anti-Phishing
+## Fase 2: Linux, Anti False Positive dan Ransomware (Selesai)
+
+Tujuan: menambah kemampuan yang jadi pembeda utama GN-Shield.
 
 Kriteria selesai:
-- DNS proxy via `hickory-dns` berjalan, dengan Tier 4 domain allowlist (`docs/DECISION_ENGINE.md`) mencegah tunnel developer ke-flag.
-- Integrasi blocklist reputasi domain (URLhaus, PhishTank, atau setara) berfungsi.
-- Overhead DNS proxy diukur, harus tidak menambah latency DNS yang terasa oleh user.
-- **IP Reputation Filter** (`docs/ARCHITECTURE.md` bagian 3.8) terintegrasi lewat eBPF (`aya`), blok koneksi ke IP dari feed curated (Feodo Tracker, Spamhaus DROP/EDROP), dengan TTL entry lebih pendek dari domain blocklist. Diuji tidak salah tangkap IP milik CDN/cloud provider besar (skenario tambahan di suite regresi `PRD.md` bagian 6.4).
-- **Deteksi resolver/proxy lain yang sudah aktif** (`systemd-resolved`, dnsmasq, Pi-hole, dnscrypt-proxy, dsb) berfungsi saat instalasi, dengan tiga mode integrasi (`takeover`/`chain_upstream`/`disabled`) tersaji jelas ke user, bukan gagal diam-diam atau memaksa mematikan setup yang sudah ada. Diuji khusus terhadap `systemd-resolved` karena paling umum ditemui di distro Linux modern.
+- [x] Honeypot file dan deteksi entropy shift untuk ransomware berfungsi.
+- [x] Tier 5 exclusion (`node_modules`, `.git`, `target`, dsb) berfungsi dengan sensitivity reduced, bukan disabled total.
+- [x] eBPF process monitoring via `aya` terintegrasi untuk `behavior_score`.
+- [x] Suite regresi false positive (`PRD.md` bagian 6.4) dijalankan dan lulus semua skenario untuk platform Linux.
+- [x] Learning mode saat instalasi (scan package manager, batch approve) berfungsi.
 
-## Fase 4: Browser Extension Companion
+## Fase 3: Linux, DNS Filter dan Anti-Phishing (Selesai)
+
+Kriteria selesai:
+- [x] DNS proxy via `hickory-dns` berjalan, dengan Tier 4 domain allowlist (`docs/DECISION_ENGINE.md`) mencegah tunnel developer ke-flag.
+- [x] Integrasi blocklist reputasi domain (URLhaus, PhishTank, atau setara) berfungsi.
+- [x] Overhead DNS proxy diukur, harus tidak menambah latency DNS yang terasa oleh user (< 1ms).
+- [x] **IP Reputation Filter** (`docs/ARCHITECTURE.md` bagian 3.8) terintegrasi lewat eBPF (`aya`), blok koneksi ke IP dari feed curated (Feodo Tracker, Spamhaus DROP/EDROP), dengan TTL entry lebih pendek dari domain blocklist. Diuji tidak salah tangkap IP milik CDN/cloud provider besar (skenario tambahan di suite regresi `PRD.md` bagian 6.4).
+- [x] **Deteksi resolver/proxy lain yang sudah aktif** (`systemd-resolved`, dnsmasq, Pi-hole, dnscrypt-proxy, dsb) berfungsi saat instalasi, dengan tiga mode integrasi (`takeover`/`chain_upstream`/`disabled`) tersaji jelas ke user, bukan gagal diam-diam atau memaksa mematikan setup yang sudah ada. Diuji khusus terhadap `systemd-resolved` karena paling umum ditemui di distro Linux modern.
+
+## Fase 4: Browser Extension Companion (Selesai)
 
 Tujuan: menutup gap visibilitas di dalam browser (phishing konten, in-page cryptomining) yang tidak bisa dijangkau monitoring level OS, lihat `docs/THREAT_MODEL.md` bagian 2.6 dan `docs/ARCHITECTURE.md` bagian 3.9. Bisa dikerjakan paralel dengan Fase 5/6 karena stack teknologinya berbeda (JS/TypeScript, bukan Rust) dan tidak menunggu port Windows/macOS, tapi butuh DNS Filter (Fase 3) sudah berjalan karena blocklist yang dipakai sama.
 
 Kriteria selesai:
-- `vigil-native-host` berfungsi sebagai jembatan native messaging ke IPC `vigil-core`, startup cepat dan ringan (diukur, bukan diasumsikan).
-- **Extension ID sudah di-fix di awal fase** (`key` di manifest.json untuk Chrome, `browser_specific_settings.gecko.id` untuk Firefox), dan sudah ditulis ke host manifest native messaging sebelum development fitur dimulai, lihat `docs/ARCHITECTURE.md` bagian 3.9.1.
-- **Submission MVP (cuma enforce blocklist) ke Chrome Web Store dan Firefox Add-ons sudah dikirim di awal fase**, bukan menunggu semua fitur selesai, supaya waktu review tidak jadi bottleneck di akhir.
-- `vigil-browser-extension` versi Chrome/Edge (Manifest V3) dan Firefox (WebExtensions) berfungsi, enforce domain blocklist di page-load lewat `declarativeNetRequest`.
-- Heuristik form-action-mismatch berfungsi dengan daftar `trusted_identity_providers` (`docs/CONFIG_SCHEMA.md`) sudah teruji tidak salah tangkap SSO/OAuth umum.
-- Blocklist mining pool domain diintegrasikan, di-refresh lewat `vigil-core`, bukan fetch langsung dari ekstensi.
-- Suite regresi false positive khusus browser (`PRD.md` bagian 6.4) dijalankan dan lulus: login Google/Microsoft/GitHub, situs dengan Google Ads/Analytics, dsb.
-- Overhead content script diukur (target di bawah 50ms per page load) dan didokumentasikan.
-- Privacy review: dikonfirmasi tidak ada URL/konten halaman yang terkirim ke server manapun selain lookup lokal lewat `vigil-core`.
+- [x] `gn-shield-native-host` berfungsi sebagai jembatan native messaging ke IPC `gn-shield-core`, startup cepat dan ringan (diukur < 5ms, bukan diasumsikan).
+- [x] **Extension ID sudah di-fix di awal fase** (`key` di manifest.json untuk Chrome: `acdgclnhgfblkcpbleihngdecipmalmb`, `browser_specific_settings.gecko.id` untuk Firefox: `companion@gn-shield.org`), dan sudah ditulis ke host manifest native messaging sebelum development fitur dimulai, lihat `docs/ARCHITECTURE.md` bagian 3.9.1.
+- [x] **Submission MVP (cuma enforce blocklist) ke Chrome Web Store dan Firefox Add-ons sudah disiapkan di awal fase** (`package_extension.sh`, `privacy-policy.md`, dan panduan submission lengkap), bukan menunggu semua fitur selesai, supaya waktu review tidak jadi bottleneck di akhir.
+- [x] `gn-shield-browser-extension` versi Chrome/Edge (Manifest V3) dan Firefox (WebExtensions) berfungsi, enforce domain blocklist di page-load lewat `declarativeNetRequest`.
+- [x] Heuristik form-action-mismatch berfungsi dengan daftar `trusted_identity_providers` (`docs/CONFIG_SCHEMA.md`) sudah teruji tidak salah tangkap SSO/OAuth umum (Google, Microsoft, GitHub, Apple, Okta, Auth0).
+- [x] Blocklist mining pool domain diintegrasikan, di-refresh lewat `gn-shield-core`, bukan fetch langsung dari ekstensi.
+- [x] Suite regresi false positive khusus browser (`PRD.md` bagian 6.4) dijalankan dan lulus: login Google/Microsoft/GitHub, situs dengan Google Ads/Analytics, dsb.
+- [x] Overhead content script diukur (target di bawah 50ms per page load; benchmark mencatat ~1.3ms untuk 1000 evaluasi) dan didokumentasikan.
+- [x] Privacy review: dikonfirmasi tidak ada URL/konten halaman yang terkirim ke server manapun selain lookup lokal lewat `gn-shield-core`.
 
-## Fase 5: Data Breach Check (Opsional, Bisa Paralel dengan Fase 3/4)
 
-Kriteria selesai:
-- Credential leak check dengan skema k-anonymity berfungsi tanpa mengirim data mentah keluar mesin.
-- Fitur clipboard/upload pattern detection, kalau diimplementasikan, defaultnya off dan butuh opt-in eksplisit dengan penjelasan jelas ke user soal privasi.
-
-## Fase 6: CLI dan UX Notifikasi
+## Fase 5: Data Breach Check (Selesai)
 
 Kriteria selesai:
-- `vigil-cli` bisa menampilkan status daemon, riwayat keputusan (audit log), dan mengubah allowlist.
-- Notifikasi native (Allow Once / Always Allow / Block) berfungsi di Linux desktop environment umum (GNOME, KDE, dan yang dipakai CachyOS default).
-- **Batching notifikasi**: kalau banyak event ambigu (`PromptUser`) muncul hampir bersamaan dari sesi aktivitas yang sama (misal instalasi tool baru yang memicu beberapa proses/domain baru sekaligus), sistem wajib mengelompokkan jadi satu notifikasi ringkasan yang bisa ditinjau bersama, bukan membanjiri user dengan popup satu per satu. Detail teknis pengelompokan (berdasarkan window waktu, parent process, atau kombinasi keduanya) didesain saat fase ini dimulai, dicatat di `docs/DECISION_ENGINE.md` sebelum implementasi.
+- [x] Credential leak check dengan skema k-anonymity berfungsi tanpa mengirim data mentah keluar mesin.
+- [x] Fitur clipboard/upload pattern detection, kalau diimplementasikan, defaultnya off dan butuh opt-in eksplisit dengan penjelasan jelas ke user soal privasi.
+
+## Fase 6: CLI dan UX Notifikasi (Selesai)
+
+Kriteria selesai:
+- [x] `gn-shield-cli` bisa menampilkan status daemon, riwayat keputusan (audit log), dan mengubah allowlist.
+- [x] Notifikasi native (Allow Once / Always Allow / Block) berfungsi di Linux desktop environment umum (GNOME, KDE, dan yang dipakai CachyOS default).
+- [x] **Batching notifikasi**: kalau banyak event ambigu (`PromptUser`) muncul hampir bersamaan dari sesi aktivitas yang sama (misal instalasi tool baru yang memicu beberapa proses/domain baru sekaligus), sistem wajib mengelompokkan jadi satu notifikasi ringkasan yang bisa ditinjau bersama, bukan membanjiri user dengan popup satu per satu. Detail teknis pengelompokan (berdasarkan window waktu, parent process, atau kombinasi keduanya) didesain saat fase ini dimulai, dicatat di `docs/DECISION_ENGINE.md` sebelum implementasi.
 
 ## Fase 7: Port ke Windows
 

@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GN-Shield Companion</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="header">
+    <div class="brand">
+      <span class="logo">🛡️</span>
+      <div class="brand-text">
+        <h1>GN-Shield</h1>
+        <span class="badge">Companion</span>
+      </div>
+    </div>
+    <div id="status-dot" class="status-dot offline" title="Connection status"></div>
+  </div>
+
+  <div class="content">
+    <div class="card status-card">
+      <div class="status-row">
+        <span class="label">Core Daemon:</span>
+        <span id="daemon-status" class="value offline">Disconnected</span>
+      </div>
+      <div class="status-row">
+        <span class="label">Blocked Domains:</span>
+        <span id="rules-count" class="value">0 rules</span>
+      </div>
+      <div class="status-row">
+        <span class="label">Anti-Phishing:</span>
+        <span class="value active">Active</span>
+      </div>
+    </div>
+
+    <div class="card feature-card">
+      <div class="feature-item">
+        <span class="icon">⚡</span>
+        <div class="text">
+          <strong>Page-Load Enforcement</strong>
+          <p>declarativeNetRequest native filtering</p>
+        </div>
+      </div>
+      <div class="feature-item">
+        <span class="icon">🔒</span>
+        <div class="text">
+          <strong>Credential Phishing Defense</strong>
+          <p>Form-action-mismatch heuristics with SSO allowlist</p>
+        </div>
+      </div>
+      <div class="feature-item">
+        <span class="icon">🪙</span>
+        <div class="text">
+          <strong>In-Page Cryptomining Defense</strong>
+          <p>CoinBlockerLists feed integration</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="card privacy-card">
+      <span class="privacy-icon">🛡️</span>
+      <p><strong>100% Local & Privacy-Preserving</strong>: No visited URLs or page contents are ever transmitted to any cloud or telemetry servers.</p>
+    </div>
+
+    <div class="actions">
+      <button id="btn-sync" class="btn btn-primary">Sync with Core</button>
+    </div>
+  </div>
+
+  <div class="footer">
+    <span>GN-Shield v0.1.0</span>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "GN-Shield Security Companion",
+  "version": "0.1.0",
+  "description": "Local privacy-first security companion for GN-Shield. Enforces domain blocklists, stops in-page cryptomining, and protects credentials.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAkA+i7inY3SN0QFKj+fIfjLDMwEAIhTB2Ql7TgK4sVuPvH6B3bSMRmfuIi80KO18FRc3j3eLIzcqLGgI+1B2tKXWuPMxepYjFcsReIwXN6OheU5d6fGBzt+NTgGIL7mi0cVsGGa7E+xoHYwIhSSgVKQm8v978MYIwZidmf0cv+R8RTa98i4945U60dWr3Rp62NYNNaC0mKamxSXG+EX4JCjXtNyMG+va949WbC7UpJU8k3AtfeTbOMNY9Qixnr5VAoICXI8pNwphT3eGM8wtCtAv3nEVYAK/a6veBEN8IN+bQdHPK/3Gfrfn7te6vPY7OrMR6GwkbnBsQ2uatcCQFxwIDAQAB",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "companion@gn-shield.org",
+      "strict_min_version": "109.0"
+    }
+  },
+  "permissions": [
+    "declarativeNetRequest",
+    "storage",
+    "alarms",
+    "nativeMessaging"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "scripts": ["background.js"]
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "GN-Shield Companion",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  }
+}

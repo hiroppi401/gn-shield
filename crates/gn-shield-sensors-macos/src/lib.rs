@@ -17,3 +17,19 @@ impl FileSystemSensor for MacOsFsSensor {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_macos_fs_sensor_stub() {
+        let mut sensor = MacOsFsSensor;
+        assert!(sensor.watch(Path::new("/tmp")).is_ok());
+
+        let result = sensor.next_event();
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(err.to_string().contains("macOS sensor not supported"));
+    }
+}

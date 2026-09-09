@@ -6,3 +6,9 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+serde.workspace = true
+serde_json.workspace = true
+gn-shield-config = { path = "../gn-shield-config" }
+gn-shield-core = { path = "../gn-shield-core" }
+gn-shield-dns = { path = "../gn-shield-dns" }
+url = "2.5"

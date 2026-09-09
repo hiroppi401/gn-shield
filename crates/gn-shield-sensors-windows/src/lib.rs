@@ -17,3 +17,19 @@ impl FileSystemSensor for WindowsFsSensor {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_windows_fs_sensor_stub() {
+        let mut sensor = WindowsFsSensor;
+        assert!(sensor.watch(Path::new("C:\\temp")).is_ok());
+
+        let result = sensor.next_event();
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(err.to_string().contains("Windows sensor not supported"));
+    }
+}

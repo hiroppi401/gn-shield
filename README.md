@@ -72,4 +72,5 @@ Daftar crate di atas sengaja diringkas, bukan daftar lengkap, supaya README tida
 
 ## Status Implementasi
 
-Belum ada kode. Lihat `ROADMAP.md` untuk fase berikutnya. Jangan menulis kode berdasarkan asumsi struktur yang belum tercatat di `docs/ARCHITECTURE.md`, tambahkan dulu ke dokumen itu, baru implementasi.
+Fase 0 (Fondasi) telah selesai: workspace Cargo multi-crate (`gn-shield-*`), skrip build & verifikasi lokal (`build.sh`), CI pipeline otomatis via GitHub Actions, serta policy audit keamanan (`cargo deny` & `cargo audit`) telah aktif.
+Proyek saat ini sedang mengimplementasikan dan menstabilkan kemampuan deteksi file lokal, anti-false-positive, dan integrasi sensor sistem (Fase 1-3). Lihat `ROADMAP.md` untuk rincian target per fase dan kriteria kelulusannya.

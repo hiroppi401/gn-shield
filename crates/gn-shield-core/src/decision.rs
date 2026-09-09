@@ -35,7 +35,7 @@ pub fn decide(v: &Verdict) -> Action {
     if v.behavior_score >= 0.9 {
         return Action::Block;
     }
-    if v.behavior_score >= 0.7 || v.static_score >= 0.8 {
+    if v.behavior_score >= 0.7 || v.static_score >= 0.8 || v.hash_reputation >= 0.8 {
         return Action::PromptUser;
     }
 
@@ -104,6 +104,21 @@ mod tests {
         let v = Verdict {
             static_score: 0.85,
             hash_reputation: 0.0,
+            behavior_score: 0.0,
+            allowlist_override: None,
+        };
+        assert_eq!(decide(&v), Action::PromptUser);
+    }
+
+    #[test]
+    fn test_ceiling_veto_gate_high_hash_reputation() {
+        // Fuzzy/partial hash match (belum cukup exact untuk KnownBad override) tidak boleh
+        // "terlarut" jadi Allow hanya karena static_score dan behavior_score kebetulan 0.0.
+        // hash_reputation berbobot sama (0.4) dengan static_score, jadi wajib dilindungi
+        // ceiling gate yang sama, bukan cuma static_score.
+        let v = Verdict {
+            static_score: 0.0,
+            hash_reputation: 0.85,
             behavior_score: 0.0,
             allowlist_override: None,
         };
