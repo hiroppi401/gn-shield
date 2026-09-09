@@ -1,0 +1,99 @@
+# ==============================================================================
+# GN-Shield Configuration Template
+# Standard path: /etc/gn-shield/config.toml
+# ==============================================================================
+
+[general]
+log_level = "info"            # trace, debug, info, warn, error
+telemetry_enabled = false     # default false (zero external data telemetry)
+update_channel = "stable"     # stable, beta
+
+[scoring]
+weight_static = 0.4
+weight_hash_reputation = 0.4
+weight_behavior = 0.2
+threshold_block = 0.8
+threshold_prompt = 0.4
+
+[dns_filter]
+enabled = true
+listen_address = "127.0.0.1:53"
+listen_address_v6 = "[::1]:53"
+upstream = ["1.1.1.1", "9.9.9.9"]
+blocklist_sources = ["urlhaus", "phishtank", "coinblockerlists"]
+psl_stale_warning_days = 45
+integration_mode = "auto"     # auto, takeover, chain_upstream, disabled
+chain_upstream_listen_port = 5353
+
+[ip_reputation_filter]
+enabled = true
+feed_sources = ["feodotracker", "spamhaus_drop", "coinblockerlists"]
+ttl_days = 10
+stale_warning_days = 7
+repeated_attempt_threshold_count = 5
+repeated_attempt_threshold_window_seconds = 60
+
+[browser_extension]
+enabled = true
+enforce_domain_blocklist = true
+form_action_mismatch_heuristic = true
+trusted_identity_providers = [
+    "accounts.google.com",
+    "login.microsoftonline.com",
+    "github.com",
+    "appleid.apple.com",
+    "*.okta.com",
+    "*.auth0.com"
+]
+blocklist_refresh_via = "gn-shield-core"
+
+[notifications]
+style = "native"              # native, minimal, silent_log_only
+prompt_timeout_seconds = 60
+default_action_on_timeout = "allow_once"
+batching_enabled = true
+batch_window_ms = 1000
+batch_threshold_count = 2
+
+[data_breach]
+enabled = false               # Default OFF (requires explicit user opt-in)
+scan_clipboard = false        # Default OFF (requires explicit user opt-in)
+scan_uploads = false          # Default OFF (requires explicit user opt-in)
+k_anonymity_api_url = "https://api.pwnedpasswords.com/range/"
+check_timeout_ms = 3000
+
+[[network.domain_allowlist]]
+pattern = "*.trycloudflare.com"
+reason = "Cloudflare Quick Tunnel"
+
+[[network.domain_allowlist]]
+pattern = "*.cfargotunnel.com"
+reason = "Cloudflare Named Tunnel"
+
+[[network.domain_allowlist]]
+pattern = "*.ngrok.io"
+reason = "ngrok tunnel"
+
+[[network.domain_allowlist]]
+pattern = "*.ts.net"
+reason = "Tailscale MagicDNS"
+
+[[network.ip_allowlist]]
+cidr = "100.64.0.0/10"
+reason = "Tailscale CGNAT range"
+
+[[ransomware.excluded_paths]]
+pattern = "**/node_modules/**"
+sensitivity = "reduced"
+
+[[ransomware.excluded_paths]]
+pattern = "**/.git/**"
+sensitivity = "reduced"
+
+[[ransomware.excluded_paths]]
+pattern = "**/target/**"
+sensitivity = "reduced"
+
+[[ransomware.excluded_paths]]
+pattern = "**/.venv/**"
+sensitivity = "reduced"

@@ -1,0 +1,23 @@
+[Unit]
+Description=GN-Shield Security Daemon
+After=network.target local-fs.target
+Documentation=https://github.com/hiroppi401/gn-shield
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/gn-shield-core --config /etc/gn-shield/config.toml
+Restart=on-failure
+RestartSec=2s
+KillMode=process
+RuntimeDirectory=gn-shield
+StateDirectory=gn-shield
+ConfigurationDirectory=gn-shield
+LimitNOFILE=65536
+
+# Security sandbox flags
+ProtectHome=read-only
+ProtectSystem=full
+ReadWritePaths=/run/gn-shield /var/lib/gn-shield
+
+[Install]
+WantedBy=multi-user.target

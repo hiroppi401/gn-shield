@@ -5,6 +5,10 @@ Format mengikuti gaya Keep a Changelog. Setiap perubahan pada dokumen inti (`PRD
 ## [Unreleased]
 
 ### Ditambahkan
+- **System Installation & Lifecycle Automation (`install.sh` & `uninstall.sh`)**:
+  - **Script Instalasi Sistem (`install.sh`)**: Otomasi deployment rilis GN-Shield ke sistem Linux (`/usr/local/bin/`), pembuatan direktori konfigurasi (`/etc/gn-shield/`), database dan karantina (`/var/lib/gn-shield/quarantine/`), soket runtime (`/run/gn-shield/`), registrasi manifest native messaging browser companion secara sistem-wide, setup service systemd (`gn-shield.service`), dan pemindaian awal learning mode (`pacman`, `dpkg`, `rpm`).
+  - **Script Uninstalasi Sistem (`uninstall.sh`)**: Pembersihan bersih sesuai mandat `PRD.md` Bagian 7.5, mencakup penonaktifan service systemd, penghapusan binari, pencabutan manifest browser, pembersihan soket, dan pengamanan file karantina agar tidak terhapus tanpa konfirmasi.
+  - **Unit Systemd Production & Template Konfigurasi**: Penambahan `config/gn-shield.service` dengan proteksi sandbox (`ProtectSystem=full`, `ProtectHome=read-only`) dan `config/config.example.toml`.
 - **Fase 6 Selesai (CLI dan UX Notifikasi)**:
   - **GN-Shield CLI Binary (`gn-shield-cli`)**: Perangkat command-line interaktif dengan subkomando `status` (status daemon & staleness warning), `log`/`history` (tinjauan audit log terformat), `allow`/`block` (manajemen rule), `quarantine` (list & restore file), `check-breach` (pemeriksaan kebocoran kredensial k-anonymity), dan `scan-sensitive` (inspeksi token & kunci privat lokal).
   - **Local Unix Domain Socket IPC & SO_PEERCRED Authorization**: Server IPC asinkron berbasis JSON-RPC di `gn-shield-core` (`/run/gn-shield/gn-shield.sock` / `/tmp/gn-shield.sock`). Pengecekan kredensial peer Linux (`SO_PEERCRED`) mewajibkan hak akses administratif (UID=0) untuk setiap mutasi state (allowlist, blocklist, restore karantina), mencegah eskalasi hak akses dari proses lokal non-privileged.
