@@ -95,6 +95,26 @@ impl IpcServer {
 
         let listener = UnixListener::bind(&self.socket_path)?;
 
+        // Harden socket file permissions.
+        // If the socket resides in the system runtime directory (/run/gn-shield),
+        // assign it to the 'gn-shield' group if present with 0660 permissions,
+        // so desktop users (and browser companions) in that group can query status
+        // and logs, while mutation methods remain protected by SO_PEERCRED UID=0.
+        // Otherwise (or for per-user / tmp sockets), restrict strictly to 0600 (owner only).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut mode = 0o600;
+            if self.socket_path.starts_with("/run/gn-shield") {
+                if let Some(gid) = get_system_group_gid("gn-shield") {
+                    let _ = std::os::unix::fs::chown(&self.socket_path, None, Some(gid));
+                    mode = 0o660;
+                }
+            }
+            let perms = std::fs::Permissions::from_mode(mode);
+            let _ = std::fs::set_permissions(&self.socket_path, perms);
+        }
+
         loop {
             tokio::select! {
                 _ = shutdown_rx.recv() => {
@@ -373,6 +393,22 @@ impl IpcClient {
     }
 }
 
+#[cfg(unix)]
+fn get_system_group_gid(group_name: &str) -> Option<u32> {
+    let content = std::fs::read_to_string("/etc/group").ok()?;
+    for line in content.lines() {
+        let mut parts = line.split(':');
+        if let (Some(name), Some(_passwd), Some(gid_str)) =
+            (parts.next(), parts.next(), parts.next())
+        {
+            if name == group_name {
+                return gid_str.parse().ok();
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -460,5 +496,54 @@ mod tests {
 
         let _ = shutdown_tx.send(());
         let _ = srv_task.await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_ipc_socket_permission_hardened_to_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir().expect("tempdir");
+        let sock_path = dir.path().join("test_perm.sock");
+
+        let storage = StorageManager::open_in_memory().expect("storage open");
+        let mock_provider = Arc::new(MockRangeProvider::new());
+        let breach_service = Arc::new(BreachService::new(
+            DataBreachConfig {
+                enabled: false,
+                scan_clipboard: false,
+                scan_uploads: false,
+                k_anonymity_api_url: "mock://api/".to_string(),
+                check_timeout_ms: 1000,
+            },
+            mock_provider,
+        ));
+
+        let server = IpcServer::new(sock_path.clone(), storage, breach_service);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+
+        let srv_task = tokio::spawn(async move {
+            let _ = server.run(shutdown_rx).await;
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        let metadata = std::fs::metadata(&sock_path).expect("socket file must exist");
+        let mode = metadata.permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "socket permission must be 0600 (owner-only) for non-system paths, got {mode:o}."
+        );
+
+        let _ = shutdown_tx.send(());
+        let _ = srv_task.await;
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_parse_system_group_gid() {
+        // Standard root group has GID 0 on Linux
+        assert_eq!(get_system_group_gid("root"), Some(0));
+        assert_eq!(get_system_group_gid("non_existent_group_xyz_12345"), None);
     }
 }

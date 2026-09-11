@@ -9,6 +9,7 @@ rust-version.workspace = true
 gn-shield-sensors-common = { path = "../gn-shield-sensors-common" }
 gn-shield-config = { path = "../gn-shield-config" }
 notify = { workspace = true }
+libc = { workspace = true }
 aya = "0.13"
 ipnet = "2.12"
 

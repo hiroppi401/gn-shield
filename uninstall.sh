@@ -119,6 +119,10 @@ if [ "$PURGE_DATA" = true ]; then
     rm -rf "$VAR_DEST"
     rm -rf "$CONF_DEST"
     echo "  • Removed $VAR_DEST and $CONF_DEST"
+    if getent group gn-shield >/dev/null 2>&1; then
+        groupdel gn-shield 2>/dev/null || true
+        echo "  • Removed system group 'gn-shield'"
+    fi
 else
     echo "  • Configuration preserved at $CONF_DEST (remove manually or re-run with --purge)"
 fi

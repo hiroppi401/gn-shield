@@ -132,6 +132,34 @@ impl FileScanner {
             reason,
         })
     }
+
+    /// Evaluates a filesystem path and immediately executes remediation via ActionExecutor if required.
+    pub fn evaluate_and_execute(
+        &self,
+        path: &Path,
+        pid: Option<u32>,
+        executor: &mut crate::executor::ActionExecutor,
+    ) -> Result<(ScanEvaluation, crate::executor::ExecutionReport), String> {
+        let eval = self.evaluate_file(path)?;
+        let report = executor.execute_scan_verdict(&eval, pid)?;
+        Ok((eval, report))
+    }
+}
+
+impl gn_shield_sensors_common::ExecPermEvaluator for FileScanner {
+    fn evaluate_permission(&self, path: &Path, _pid: u32) -> Result<bool, String> {
+        match self.evaluate_file(path) {
+            Ok(eval) => {
+                // Deny execution only if Action is Block
+                Ok(eval.action != Action::Block)
+            }
+            Err(e) => {
+                // Fail-open per docs/ARCHITECTURE.md line 129
+                eprintln!("Scanner evaluation failed for {path:?}: {e}. Failing open.");
+                Ok(true)
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -242,5 +270,61 @@ mod tests {
             .expect("evaluation failed");
         assert_eq!(eval.action, Action::Block);
         assert!(eval.reason.contains("Known-Bad Hash"));
+    }
+
+    #[test]
+    fn test_scanner_exec_perm_evaluator_trait() {
+        use gn_shield_sensors_common::ExecPermEvaluator;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir failed");
+        let safe_file = temp_dir.path().join("safe.bin");
+        fs::write(&safe_file, b"safe binary content").expect("write failed");
+
+        let malware_file = temp_dir.path().join("malware.bin");
+        let malware_bytes = b"definitely_malicious_sample_bytes_987";
+        fs::write(&malware_file, malware_bytes).expect("write failed");
+
+        let config = GnShieldConfig::default();
+        let mut hash_store = HashReputationStore::new();
+        hash_store.add_known_bad(&calculate_sha256(malware_bytes));
+        let scanner = FileScanner::new(config, hash_store).expect("scanner init failed");
+
+        // Safe file must evaluate to allowed (true)
+        assert!(scanner.evaluate_permission(&safe_file, 1234).unwrap());
+
+        // Malicious file with Action::Block must evaluate to denied (false)
+        assert!(!scanner.evaluate_permission(&malware_file, 1234).unwrap());
+    }
+
+    #[test]
+    fn test_scanner_evaluate_and_execute_quarantine() {
+        use crate::executor::{ActionExecutor, ExecutionReport, QuarantineStatus};
+
+        let temp_dir = tempfile::tempdir().expect("tempdir failed");
+        let malware_file = temp_dir.path().join("malware_to_execute.bin");
+        let malware_bytes = b"malicious_execution_bytes_555";
+        fs::write(&malware_file, malware_bytes).expect("write failed");
+
+        let config = GnShieldConfig::default();
+        let mut hash_store = HashReputationStore::new();
+        hash_store.add_known_bad(&calculate_sha256(malware_bytes));
+        let scanner = FileScanner::new(config, hash_store).expect("scanner init failed");
+
+        let mut executor = ActionExecutor::new(temp_dir.path().join("quarantine"));
+        let (eval, report) = scanner
+            .evaluate_and_execute(&malware_file, None, &mut executor)
+            .expect("evaluate_and_execute failed");
+
+        assert_eq!(eval.action, Action::Block);
+        match report {
+            ExecutionReport::ContainedAndTerminated {
+                quarantined_files, ..
+            } => {
+                assert_eq!(quarantined_files.len(), 1);
+                assert_eq!(quarantined_files[0].status, QuarantineStatus::Quarantined);
+                assert!(!malware_file.exists());
+            }
+            _ => panic!("Expected ContainedAndTerminated, got: {report:?}"),
+        }
     }
 }

@@ -207,19 +207,74 @@ impl RansomwareDetector {
         // Normal activity
         (Action::Allow, IncidentAction::Allow)
     }
+
+    /// Records a file modification event, evaluates against behavioral conditions,
+    /// and immediately executes containment via ActionExecutor if IncidentAction::ContainAndTerminate is triggered.
+    pub fn record_evaluate_and_execute(
+        &mut self,
+        path: &Path,
+        payload_entropy: Option<f32>,
+        pid: Option<u32>,
+        executor: &mut crate::executor::ActionExecutor,
+    ) -> (
+        Action,
+        IncidentAction,
+        Option<crate::executor::ExecutionReport>,
+    ) {
+        let (action, incident) = self.record_and_evaluate(path, payload_entropy);
+        let exec_report = match &incident {
+            IncidentAction::ContainAndTerminate { .. } => {
+                executor.execute_incident_action(&incident, pid).ok()
+            }
+            _ => None,
+        };
+        (action, incident, exec_report)
+    }
 }
 
-/// Matches path against glob-like pattern such as "**/node_modules/**" or "**/target/**".
+impl IncidentAction {
+    /// Executes this IncidentAction via the provided ActionExecutor.
+    pub fn execute(
+        &self,
+        pid: Option<u32>,
+        executor: &mut crate::executor::ActionExecutor,
+    ) -> Result<crate::executor::ExecutionReport, String> {
+        executor.execute_incident_action(self, pid)
+    }
+}
+
+/// Matches path against glob-like pattern such as "**/node_modules/**" or "**/target/debug/**".
+/// Supports multi-segment middle patterns (e.g. "target/debug"), not just single-segment ones.
 pub fn matches_pattern(path: &Path, pattern: &str) -> bool {
     let clean_pattern = pattern.trim_matches('*').trim_matches('/');
+    if clean_pattern.is_empty() {
+        return false;
+    }
 
-    for component in path.components() {
-        if let std::path::Component::Normal(os_str) = component {
-            if let Some(s) = os_str.to_str() {
-                if s == clean_pattern {
-                    return true;
-                }
-            }
+    let pattern_segments: Vec<&str> = clean_pattern.split('/').filter(|s| !s.is_empty()).collect();
+    if pattern_segments.is_empty() {
+        return false;
+    }
+
+    let path_segments: Vec<String> = path
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(os_str) => os_str.to_str().map(ToString::to_string),
+            _ => None,
+        })
+        .collect();
+
+    // Slide a window of pattern_segments.len() across path_segments looking for a contiguous match.
+    if path_segments.len() < pattern_segments.len() {
+        return false;
+    }
+    for window in path_segments.windows(pattern_segments.len()) {
+        if window
+            .iter()
+            .zip(pattern_segments.iter())
+            .all(|(a, b)| a == b)
+        {
+            return true;
         }
     }
     false
@@ -244,6 +299,21 @@ mod tests {
 
         let p4 = Path::new("/home/user/project/src/main.rs");
         assert!(!matches_pattern(p4, "**/node_modules/**"));
+    }
+
+    #[test]
+    fn test_matches_pattern_multi_segment() {
+        // Regression test: single-segment-only matching would never match a
+        // multi-segment middle pattern like "target/debug", silently failing
+        // to exclude the directory.
+        let p1 = Path::new("/home/user/project/target/debug/myapp");
+        assert!(matches_pattern(p1, "**/target/debug/**"));
+
+        let p2 = Path::new("/home/user/project/target/release/myapp");
+        assert!(!matches_pattern(p2, "**/target/debug/**"));
+
+        let p3 = Path::new("/home/user/project/dist/bundle.js");
+        assert!(matches_pattern(p3, "**/dist/**"));
     }
 
     #[test]
@@ -333,6 +403,61 @@ mod tests {
                 assert!(reason.contains("canary decoy tampered"));
             }
             _ => panic!("Expected ContainAndTerminate, got {last_incident:?}"),
+        }
+    }
+
+    #[test]
+    fn test_ransomware_wiring_to_action_executor() {
+        use crate::executor::{ActionExecutor, ExecutionReport, QuarantineStatus};
+
+        let temp = tempdir().expect("tempdir failed");
+        let config = GnShieldConfig::default();
+        let mut honeypot = HoneypotManager::new();
+        let canaries = honeypot
+            .deploy_in_dir(temp.path())
+            .expect("deploy canaries failed");
+
+        let mut detector = RansomwareDetector::new(&config, honeypot);
+        let mut executor = ActionExecutor::new(temp.path().join("quarantine"));
+
+        // Tamper with canary file and record it in detector
+        let canary_path = &canaries[0];
+        fs::write(canary_path, vec![0xFF; 256]).expect("tamper failed");
+        let _ = detector.record_and_evaluate(canary_path, Some(7.9));
+
+        // High entropy writes
+        for i in 0..11 {
+            let file_path = temp.path().join(format!("enc_{i}.lock"));
+            fs::write(&file_path, vec![0xBB; 100]).expect("write failed");
+            let _ = detector.record_and_evaluate(&file_path, Some(7.8));
+        }
+
+        // 12th write triggers ContainAndTerminate and wires to executor
+        let target_file = temp.path().join("enc_11.lock");
+        fs::write(&target_file, vec![0xBB; 100]).expect("write failed");
+
+        let (action, incident, exec_report) =
+            detector.record_evaluate_and_execute(&target_file, Some(7.9), None, &mut executor);
+
+        assert_eq!(action, Action::Block);
+        assert!(matches!(
+            incident,
+            IncidentAction::ContainAndTerminate { .. }
+        ));
+
+        let report = exec_report.expect("expected execution report");
+        match report {
+            ExecutionReport::ContainedAndTerminated {
+                quarantined_files,
+                reason,
+                ..
+            } => {
+                assert!(reason.contains("canary decoy tampered"));
+                assert!(!quarantined_files.is_empty());
+                // Quarantined files must be in QuarantineStatus::Quarantined
+                assert_eq!(quarantined_files[0].status, QuarantineStatus::Quarantined);
+            }
+            _ => panic!("Expected ContainedAndTerminated, got: {report:?}"),
         }
     }
 }

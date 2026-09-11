@@ -107,6 +107,18 @@ echo "  • Installed $BIN_DEST/gn-shield-native-host"
 
 # 4. Create Directories & Configurations
 echo "==> [4/7] Setting up configuration and data directories..."
+
+# Create system group 'gn-shield' for desktop user CLI access & browser companion
+if ! getent group gn-shield >/dev/null 2>&1; then
+    groupadd -r gn-shield
+    echo "  • Created system group 'gn-shield'"
+fi
+
+if [ -n "${SUDO_USER:-}" ]; then
+    usermod -aG gn-shield "$SUDO_USER"
+    echo "  • Added user '$SUDO_USER' to group 'gn-shield'"
+fi
+
 mkdir -p "$CONF_DEST"
 mkdir -p "$VAR_DEST/quarantine"
 mkdir -p "$RUN_DEST"
@@ -114,7 +126,8 @@ mkdir -p "$RUN_DEST"
 chmod 0755 "$CONF_DEST"
 chmod 0700 "$VAR_DEST"
 chmod 0700 "$VAR_DEST/quarantine"
-chmod 0755 "$RUN_DEST"
+chown root:gn-shield "$RUN_DEST"
+chmod 0750 "$RUN_DEST"
 
 # Install configuration file if not already present
 if [ ! -f "$CONF_DEST/config.toml" ]; then
@@ -152,7 +165,10 @@ ExecStart=/usr/local/bin/gn-shield-core --config /etc/gn-shield/config.toml
 Restart=on-failure
 RestartSec=2s
 KillMode=process
+Group=gn-shield
 RuntimeDirectory=gn-shield
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
 StateDirectory=gn-shield
 ConfigurationDirectory=gn-shield
 LimitNOFILE=65536
@@ -202,3 +218,9 @@ echo "  • Password Breach  : gn-shield-cli check-breach <password>"
 echo "  • Service Logs     : journalctl -u gn-shield.service -f"
 echo "  • Configuration    : /etc/gn-shield/config.toml"
 echo ""
+if [ -n "${SUDO_USER:-}" ]; then
+    echo "💡 Note: User '$SUDO_USER' has been added to group 'gn-shield'."
+    echo "   If 'gn-shield-cli status' reports permission denied, please log out"
+    echo "   and log back in (or run 'newgrp gn-shield') to activate the new group."
+    echo ""
+fi

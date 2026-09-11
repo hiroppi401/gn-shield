@@ -964,6 +964,7 @@ dependencies = [
  "gn-shield-sensors-linux",
  "gn-shield-storage",
  "hickory-proto",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",
@@ -1022,6 +1023,7 @@ dependencies = [
  "gn-shield-config",
  "gn-shield-sensors-common",
  "ipnet",
+ "libc",
  "notify",
  "tempfile",
 ]

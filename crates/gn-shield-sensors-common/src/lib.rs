@@ -77,6 +77,22 @@ pub trait NetworkSensor {
     fn next_event(&mut self) -> Result<NetworkEvent, SensorError>;
 }
 
+/// Evaluator trait for fanotify / endpoint execution permission requests.
+pub trait ExecPermEvaluator: Send + Sync {
+    /// Evaluates whether an executable at `path` is allowed to run for process `pid`.
+    /// Returns Ok(true) if allowed, Ok(false) if blocked/denied, or Err if evaluation failed.
+    fn evaluate_permission(&self, path: &Path, pid: u32) -> Result<bool, String>;
+}
+
+impl<F> ExecPermEvaluator for F
+where
+    F: Fn(&Path, u32) -> Result<bool, String> + Send + Sync,
+{
+    fn evaluate_permission(&self, path: &Path, pid: u32) -> Result<bool, String> {
+        (self)(path, pid)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,5 +166,23 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn test_exec_perm_evaluator_closure() {
+        let evaluator = |_path: &Path, pid: u32| {
+            if pid == 9999 {
+                Ok(false)
+            } else {
+                Ok(true)
+            }
+        };
+
+        assert!(evaluator
+            .evaluate_permission(Path::new("/bin/ls"), 1234)
+            .unwrap());
+        assert!(!evaluator
+            .evaluate_permission(Path::new("/bin/malware"), 9999)
+            .unwrap());
     }
 }
