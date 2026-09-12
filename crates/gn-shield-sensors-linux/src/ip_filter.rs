@@ -198,6 +198,12 @@ impl EbpfIpReputationFilter {
             })
             .map_err(|e| SensorError::InitError(e.to_string()))
     }
+
+    /// Returns a clone of the network event sender.
+    #[must_use]
+    pub fn event_sender(&self) -> Sender<NetworkEvent> {
+        self.tx.clone()
+    }
 }
 
 impl NetworkSensor for EbpfIpReputationFilter {

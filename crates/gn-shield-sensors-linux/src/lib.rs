@@ -62,6 +62,12 @@ impl LinuxFsSensor {
         self
     }
 
+    /// Returns a clone of the filesystem event sender.
+    #[must_use]
+    pub fn event_sender(&self) -> Sender<Result<FsEvent, SensorError>> {
+        self.tx.clone()
+    }
+
     /// Attempts to initialize fanotify with `FAN_CLASS_CONTENT` and permission mode.
     /// Returns `Ok(())` if privileged, or `Err(SensorError::PermissionDenied)` if unprivileged.
     pub fn try_init_fanotify(&mut self) -> Result<(), SensorError> {
