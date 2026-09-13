@@ -18,7 +18,7 @@ pub use executor::{
 };
 pub use ipc::{
     ArtifactStalenessStatus, DaemonStatus, IpcClient, IpcRequest, IpcResponse, IpcServer,
-    ModuleStatus, DEFAULT_SOCKET_PATH, FALLBACK_SOCKET_PATH,
+    ModuleHealth, ModuleStatus, DEFAULT_SOCKET_PATH, FALLBACK_SOCKET_PATH,
 };
 pub use learning::{InstalledPackage, LearningModeScanner};
 pub use notification::{

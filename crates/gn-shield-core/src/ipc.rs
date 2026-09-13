@@ -8,6 +8,7 @@ use crate::breach_service::BreachService;
 use gn_shield_storage::{AuditLogFilter, StorageManager};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -33,6 +34,53 @@ pub struct ModuleStatus {
     pub ip_rep_filter_active: bool,
     pub browser_companion_active: bool,
     pub breach_checker_active: bool,
+}
+
+/// Shared atomic health and liveness flags for active GN-Shield protection modules.
+///
+/// Each flag is an `Arc<AtomicBool>` updated live by the owning thread/task runtime,
+/// ensuring that IPC status queries accurately reflect runtime health rather than
+/// static hardcoded assumptions.
+#[derive(Debug, Clone)]
+pub struct ModuleHealth {
+    pub fs_sensor_active: Arc<AtomicBool>,
+    pub ebpf_sensor_active: Arc<AtomicBool>,
+    pub dns_filter_active: Arc<AtomicBool>,
+    pub ip_rep_filter_active: Arc<AtomicBool>,
+    pub browser_companion_active: Arc<AtomicBool>,
+    pub breach_checker_active: Arc<AtomicBool>,
+}
+
+impl Default for ModuleHealth {
+    fn default() -> Self {
+        Self {
+            fs_sensor_active: Arc::new(AtomicBool::new(false)),
+            ebpf_sensor_active: Arc::new(AtomicBool::new(false)),
+            dns_filter_active: Arc::new(AtomicBool::new(false)),
+            ip_rep_filter_active: Arc::new(AtomicBool::new(false)),
+            browser_companion_active: Arc::new(AtomicBool::new(false)),
+            breach_checker_active: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+impl ModuleHealth {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn to_module_status(&self) -> ModuleStatus {
+        ModuleStatus {
+            fs_sensor_active: self.fs_sensor_active.load(Ordering::Relaxed),
+            ebpf_sensor_active: self.ebpf_sensor_active.load(Ordering::Relaxed),
+            dns_filter_active: self.dns_filter_active.load(Ordering::Relaxed),
+            ip_rep_filter_active: self.ip_rep_filter_active.load(Ordering::Relaxed),
+            browser_companion_active: self.browser_companion_active.load(Ordering::Relaxed),
+            breach_checker_active: self.breach_checker_active.load(Ordering::Relaxed),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,6 +112,7 @@ pub struct IpcServer {
     socket_path: PathBuf,
     storage: StorageManager,
     breach_service: Arc<BreachService>,
+    module_health: ModuleHealth,
     start_time: std::time::Instant,
 }
 
@@ -72,11 +121,13 @@ impl IpcServer {
         socket_path: PathBuf,
         storage: StorageManager,
         breach_service: Arc<BreachService>,
+        module_health: ModuleHealth,
     ) -> Self {
         Self {
             socket_path,
             storage,
             breach_service,
+            module_health,
             start_time: std::time::Instant::now(),
         }
     }
@@ -124,10 +175,11 @@ impl IpcServer {
                     if let Ok((stream, _)) = accept_res {
                         let storage = self.storage.clone();
                         let breach_service = self.breach_service.clone();
+                        let module_health = self.module_health.clone();
                         let start_time = self.start_time;
 
                         tokio::spawn(async move {
-                            let _ = Self::handle_connection(stream, storage, breach_service, start_time).await;
+                            let _ = Self::handle_connection(stream, storage, breach_service, module_health, start_time).await;
                         });
                     }
                 }
@@ -142,6 +194,7 @@ impl IpcServer {
         mut stream: UnixStream,
         storage: StorageManager,
         breach_service: Arc<BreachService>,
+        module_health: ModuleHealth,
         start_time: std::time::Instant,
     ) -> std::io::Result<()> {
         // Query peer credentials on Linux
@@ -157,7 +210,7 @@ impl IpcServer {
         while buf_reader.read_line(&mut line).await? > 0 {
             let req: Result<IpcRequest, _> = serde_json::from_str(&line);
             let resp = match req {
-                Ok(r) => Self::dispatch_request(r, &storage, &breach_service, start_time, peer_uid),
+                Ok(r) => Self::dispatch_request(r, &storage, &breach_service, &module_health, start_time, peer_uid),
                 Err(e) => IpcResponse {
                     id: 0,
                     result: None,
@@ -179,6 +232,7 @@ impl IpcServer {
         req: IpcRequest,
         storage: &StorageManager,
         breach_service: &Arc<BreachService>,
+        module_health: &ModuleHealth,
         start_time: std::time::Instant,
         peer_uid: u32,
     ) -> IpcResponse {
@@ -189,14 +243,7 @@ impl IpcServer {
                     pid: std::process::id(),
                     uptime_seconds: start_time.elapsed().as_secs(),
                     version: env!("CARGO_PKG_VERSION").to_string(),
-                    modules: ModuleStatus {
-                        fs_sensor_active: true,
-                        ebpf_sensor_active: true,
-                        dns_filter_active: true,
-                        ip_rep_filter_active: true,
-                        browser_companion_active: true,
-                        breach_checker_active: true,
-                    },
+                    modules: module_health.to_module_status(),
                     staleness: ArtifactStalenessStatus {
                         yara_signatures_days: 2,
                         hash_reputation_days: 1,
@@ -452,7 +499,11 @@ mod tests {
             mock_provider,
         ));
 
-        let server = IpcServer::new(sock_path.clone(), storage, breach_service);
+        let module_health = ModuleHealth::default();
+        module_health.dns_filter_active.store(true, Ordering::Relaxed);
+        module_health.fs_sensor_active.store(true, Ordering::Relaxed);
+
+        let server = IpcServer::new(sock_path.clone(), storage, breach_service, module_health);
         let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
 
         let srv_task = tokio::spawn(async move {
@@ -471,6 +522,7 @@ mod tests {
             .expect("status call failed");
         assert_eq!(status_res["running"], true);
         assert_eq!(status_res["modules"]["dns_filter_active"], true);
+        assert_eq!(status_res["modules"]["fs_sensor_active"], true);
 
         // Test get_audit_log
         let log_res = client
@@ -519,7 +571,12 @@ mod tests {
             mock_provider,
         ));
 
-        let server = IpcServer::new(sock_path.clone(), storage, breach_service);
+        let server = IpcServer::new(
+            sock_path.clone(),
+            storage,
+            breach_service,
+            ModuleHealth::default(),
+        );
         let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
 
         let srv_task = tokio::spawn(async move {
@@ -534,6 +591,74 @@ mod tests {
             mode, 0o600,
             "socket permission must be 0600 (owner-only) for non-system paths, got {mode:o}."
         );
+
+        let _ = shutdown_tx.send(());
+        let _ = srv_task.await;
+    }
+
+    #[tokio::test]
+    async fn test_ipc_status_reflects_runtime_module_health_and_dead_module() {
+        let dir = tempdir().expect("tempdir");
+        let sock_path = dir.path().join("test_health.sock");
+        let storage = StorageManager::open_in_memory().expect("storage open");
+        let mock_provider = Arc::new(MockRangeProvider::new());
+        let breach_service = Arc::new(BreachService::new(
+            DataBreachConfig {
+                enabled: false,
+                scan_clipboard: false,
+                scan_uploads: false,
+                k_anonymity_api_url: "mock://api/".to_string(),
+                check_timeout_ms: 1000,
+            },
+            mock_provider,
+        ));
+
+        let module_health = ModuleHealth::default();
+        // Simulate fs_sensor and dns_filter running alive, while ip_rep_filter is stopped
+        module_health.fs_sensor_active.store(true, Ordering::Relaxed);
+        module_health.dns_filter_active.store(true, Ordering::Relaxed);
+        module_health.ip_rep_filter_active.store(false, Ordering::Relaxed);
+        module_health.ebpf_sensor_active.store(false, Ordering::Relaxed);
+
+        let server = IpcServer::new(
+            sock_path.clone(),
+            storage,
+            breach_service,
+            module_health.clone(),
+        );
+        let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+
+        let srv_task = tokio::spawn(async move {
+            let _ = server.run(shutdown_rx).await;
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        let client = IpcClient::new(&sock_path);
+
+        // 1. First status check: active modules are true, inactive are false
+        let status1 = client
+            .call("status", serde_json::json!({}))
+            .await
+            .expect("status call 1 failed");
+        assert_eq!(status1["modules"]["fs_sensor_active"], true);
+        assert_eq!(status1["modules"]["dns_filter_active"], true);
+        assert_eq!(status1["modules"]["ip_rep_filter_active"], false);
+        assert_eq!(status1["modules"]["ebpf_sensor_active"], false);
+
+        // 2. Simulate runtime crash / failure / exit: fs_sensor dies!
+        module_health.fs_sensor_active.store(false, Ordering::Relaxed);
+
+        // 3. Second status check: fs_sensor_active must dynamically transition to false
+        let status2 = client
+            .call("status", serde_json::json!({}))
+            .await
+            .expect("status call 2 failed");
+        assert_eq!(
+            status2["modules"]["fs_sensor_active"], false,
+            "Crashed/stopped module must immediately reflect false in IPC status response"
+        );
+        assert_eq!(status2["modules"]["dns_filter_active"], true);
 
         let _ = shutdown_tx.send(());
         let _ = srv_task.await;

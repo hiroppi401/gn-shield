@@ -9,7 +9,9 @@
 use gn_shield_config::GnShieldConfig;
 use gn_shield_core::breach_service::{BreachService, MockRangeProvider};
 use gn_shield_core::executor::ActionExecutor;
-use gn_shield_core::ipc::{IpcServer, DEFAULT_SOCKET_PATH, FALLBACK_SOCKET_PATH};
+use gn_shield_core::ipc::{
+    IpcServer, ModuleHealth, DEFAULT_SOCKET_PATH, FALLBACK_SOCKET_PATH,
+};
 use gn_shield_core::ransomware::{IncidentAction, RansomwareDetector};
 use gn_shield_core::{Action, FileScanner};
 use gn_shield_dns::{DnsFilterEngine, DnsProxyServer};
@@ -219,16 +221,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    let module_health = ModuleHealth::default();
     let shutdown_signal = Arc::new(AtomicBool::new(false));
     let fs_scanner_ref = Arc::clone(&file_scanner);
     let fs_ransomware_ref = Arc::clone(&ransomware_detector);
     let fs_executor_ref = Arc::clone(&executor);
     let fs_shutdown = Arc::clone(&shutdown_signal);
+    let fs_alive = Arc::clone(&module_health.fs_sensor_active);
     let fs_tx = fs_sensor.event_sender();
 
     let fs_thread = std::thread::Builder::new()
         .name("gn-shield-fs-sensor".to_string())
         .spawn(move || {
+            struct Guard(Arc<AtomicBool>, Arc<AtomicBool>);
+            impl Drop for Guard {
+                fn drop(&mut self) {
+                    self.0.store(false, Ordering::Relaxed);
+                    if !self.1.load(Ordering::Relaxed) {
+                        eprintln!(
+                            "Warning: LinuxFsSensor thread exited unexpectedly (possible crash/error)."
+                        );
+                    }
+                }
+            }
+            let _guard = Guard(Arc::clone(&fs_alive), Arc::clone(&fs_shutdown));
+            fs_alive.store(true, Ordering::Relaxed);
+
             while !fs_shutdown.load(Ordering::Relaxed) {
                 match fs_sensor.next_event() {
                     Ok(event) => match event {
@@ -298,65 +316,99 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     },
                     Err(_) => {
+                        fs_alive.store(false, Ordering::Relaxed);
                         break;
                     }
                 }
             }
+            fs_alive.store(false, Ordering::Relaxed);
         })
         .map_err(|e| format!("Failed to spawn LinuxFsSensor thread: {e}"))?;
     println!("LinuxFsSensor active loop running.");
 
     // 7. Initialize and run EbpfIpReputationFilter loop
-    let mut ip_filter =
-        EbpfIpReputationFilter::new(&config.ip_reputation_filter, &config.network.ip_allowlist);
-    if let Err(e) = ip_filter.subscribe() {
-        eprintln!("Warning: IP reputation filter subscription failed: {e}");
-    }
+    let (ip_thread, ip_tx) = if config.ip_reputation_filter.enabled {
+        let mut ip_filter =
+            EbpfIpReputationFilter::new(&config.ip_reputation_filter, &config.network.ip_allowlist);
+        if let Err(e) = ip_filter.subscribe() {
+            eprintln!("Warning: IP reputation filter subscription failed: {e}");
+        }
 
-    let ip_executor_ref = Arc::clone(&executor);
-    let ip_shutdown = Arc::clone(&shutdown_signal);
-    let ip_tx = ip_filter.event_sender();
+        let ip_executor_ref = Arc::clone(&executor);
+        let ip_shutdown = Arc::clone(&shutdown_signal);
+        let tx = ip_filter.event_sender();
+        let ip_alive_ref = Arc::clone(&module_health.ip_rep_filter_active);
+        let ebpf_alive_ref = Arc::clone(&module_health.ebpf_sensor_active);
 
-    let ip_thread = std::thread::Builder::new()
-        .name("gn-shield-ip-filter".to_string())
-        .spawn(move || {
-            while !ip_shutdown.load(Ordering::Relaxed) {
-                match ip_filter.next_event() {
-                    Ok(NetworkEvent::ConnectionAttempt {
-                        pid,
-                        destination_ip,
-                        destination_port,
-                    }) => {
-                        let verdict =
-                            ip_filter.evaluate_connection(destination_ip, SystemTime::now());
-                        match verdict {
-                            IpVerdict::Block {
-                                reason,
-                                feed_source,
-                            } => {
-                                eprintln!(
-                                    "🛡️ [Network Threat Blocked] PID {pid} connecting to {destination_ip}:{destination_port} - reason: {reason} (feed: {feed_source})"
-                                );
-                                if let Ok(mut exec) = ip_executor_ref.lock() {
-                                    let _ = exec.contain_and_terminate_process(
-                                        pid,
-                                        &format!(
-                                            "Blocked C2 connection to {destination_ip} ({feed_source})"
-                                        ),
-                                    );
-                                }
-                            }
-                            IpVerdict::Allow { .. } => {}
+        let handle = std::thread::Builder::new()
+            .name("gn-shield-ip-filter".to_string())
+            .spawn(move || {
+                struct Guard(Arc<AtomicBool>, Arc<AtomicBool>, Arc<AtomicBool>);
+                impl Drop for Guard {
+                    fn drop(&mut self) {
+                        self.0.store(false, Ordering::Relaxed);
+                        self.1.store(false, Ordering::Relaxed);
+                        if !self.2.load(Ordering::Relaxed) {
+                            eprintln!(
+                                "Warning: EbpfIpReputationFilter thread exited unexpectedly (possible crash/error)."
+                            );
                         }
                     }
-                    Err(_) => {
-                        break;
+                }
+                let _guard = Guard(
+                    Arc::clone(&ip_alive_ref),
+                    Arc::clone(&ebpf_alive_ref),
+                    Arc::clone(&ip_shutdown),
+                );
+                ip_alive_ref.store(true, Ordering::Relaxed);
+                ebpf_alive_ref.store(true, Ordering::Relaxed);
+
+                while !ip_shutdown.load(Ordering::Relaxed) {
+                    match ip_filter.next_event() {
+                        Ok(NetworkEvent::ConnectionAttempt {
+                            pid,
+                            destination_ip,
+                            destination_port,
+                        }) => {
+                            let verdict =
+                                ip_filter.evaluate_connection(destination_ip, SystemTime::now());
+                            match verdict {
+                                IpVerdict::Block {
+                                    reason,
+                                    feed_source,
+                                } => {
+                                    eprintln!(
+                                        "🛡️ [Network Threat Blocked] PID {pid} connecting to {destination_ip}:{destination_port} - reason: {reason} (feed: {feed_source})"
+                                    );
+                                    if let Ok(mut exec) = ip_executor_ref.lock() {
+                                        let _ = exec.contain_and_terminate_process(
+                                            pid,
+                                            &format!(
+                                                "Blocked C2 connection to {destination_ip} ({feed_source})"
+                                            ),
+                                        );
+                                    }
+                                }
+                                IpVerdict::Allow { .. } => {}
+                            }
+                        }
+                        Err(_) => {
+                            ip_alive_ref.store(false, Ordering::Relaxed);
+                            ebpf_alive_ref.store(false, Ordering::Relaxed);
+                            break;
+                        }
                     }
                 }
-            }
-        })
-        .map_err(|e| format!("Failed to spawn EbpfIpReputationFilter thread: {e}"))?;
-    println!("EbpfIpReputationFilter active loop running.");
+                ip_alive_ref.store(false, Ordering::Relaxed);
+                ebpf_alive_ref.store(false, Ordering::Relaxed);
+            })
+            .map_err(|e| format!("Failed to spawn EbpfIpReputationFilter thread: {e}"))?;
+        println!("EbpfIpReputationFilter active loop running.");
+        (Some(handle), Some(tx))
+    } else {
+        println!("EbpfIpReputationFilter disabled in configuration.");
+        (None, None)
+    };
 
     // 8. Initialize and run DnsProxyServer
     let dns_engine = Arc::new(tokio::sync::RwLock::new(DnsFilterEngine::new(
@@ -405,14 +457,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         upstream_addr,
     ));
 
+    let dns_alive = Arc::clone(&module_health.dns_filter_active);
+    let dns_shutdown = Arc::clone(&shutdown_signal);
     if config.dns_filter.enabled && config.dns_filter.integration_mode != "disabled" {
         let dns_clone = Arc::clone(&dns_server);
         tokio::spawn(async move {
-            if let Err(e) = dns_clone.run_udp_listeners().await {
-                eprintln!("Warning: DNS proxy server listener failed on port {dns_port}: {e}");
+            struct Guard(Arc<AtomicBool>);
+            impl Drop for Guard {
+                fn drop(&mut self) {
+                    self.0.store(false, Ordering::Relaxed);
+                }
+            }
+            match dns_clone.run_udp_listeners().await {
+                Ok(()) => {
+                    let _guard = Guard(Arc::clone(&dns_alive));
+                    dns_alive.store(true, Ordering::Relaxed);
+                    println!("DnsProxyServer active on port {dns_port} (dual-stack IPv4/IPv6).");
+                    while !dns_shutdown.load(Ordering::Relaxed) {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                    }
+                    dns_alive.store(false, Ordering::Relaxed);
+                }
+                Err(e) => {
+                    dns_alive.store(false, Ordering::Relaxed);
+                    eprintln!("Warning: DNS proxy server listener failed on port {dns_port}: {e}");
+                }
             }
         });
-        println!("DnsProxyServer active on port {dns_port} (dual-stack IPv4/IPv6).");
     } else {
         println!("DnsProxyServer disabled in configuration.");
     }
@@ -423,7 +494,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.data_breach.clone(),
         breach_provider,
     ));
-    println!("Breach detection service initialized (k-anonymity).");
+    if config.data_breach.enabled {
+        module_health.breach_checker_active.store(true, Ordering::Relaxed);
+        println!("Breach detection service initialized (k-anonymity).");
+    } else {
+        println!("Breach detection service disabled in configuration.");
+    }
+
+    if config.browser_extension.enabled {
+        module_health.browser_companion_active.store(true, Ordering::Relaxed);
+    }
 
     // 10. Determine socket path and spawn IPC Server
     let mut custom_sock = None;
@@ -438,7 +518,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let socket_path = custom_sock.unwrap_or_else(get_socket_path);
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
-    let ipc_server = IpcServer::new(socket_path.clone(), storage.clone(), breach_service.clone());
+    let ipc_server = IpcServer::new(
+        socket_path.clone(),
+        storage.clone(),
+        breach_service.clone(),
+        module_health.clone(),
+    );
     let sock_display = socket_path.display().to_string();
 
     tokio::spawn(async move {
@@ -458,10 +543,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = fs_tx.send(Err(gn_shield_sensors_common::SensorError::InitError(
         "Shutdown".to_string(),
     )));
-    drop(ip_tx);
+    if let Some(tx) = ip_tx {
+        drop(tx);
+    }
     let _ = shutdown_tx.send(());
     let _ = fs_thread.join();
-    let _ = ip_thread.join();
+    if let Some(t) = ip_thread {
+        let _ = t.join();
+    }
     tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
 
     println!("GN-Shield daemon terminated cleanly.");
