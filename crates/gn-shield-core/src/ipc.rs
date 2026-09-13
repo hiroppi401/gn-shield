@@ -5,11 +5,12 @@
 //! to prevent unprivileged local processes from bypassing protection.
 
 use crate::breach_service::BreachService;
+use crate::executor::ActionExecutor;
 use gn_shield_storage::{AuditLogFilter, StorageManager};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
@@ -118,6 +119,7 @@ pub struct IpcServer {
     storage: StorageManager,
     breach_service: Arc<BreachService>,
     module_health: ModuleHealth,
+    executor: Arc<Mutex<ActionExecutor>>,
     start_time: std::time::Instant,
 }
 
@@ -127,12 +129,14 @@ impl IpcServer {
         storage: StorageManager,
         breach_service: Arc<BreachService>,
         module_health: ModuleHealth,
+        executor: Arc<Mutex<ActionExecutor>>,
     ) -> Self {
         Self {
             socket_path,
             storage,
             breach_service,
             module_health,
+            executor,
             start_time: std::time::Instant::now(),
         }
     }
@@ -181,10 +185,19 @@ impl IpcServer {
                         let storage = self.storage.clone();
                         let breach_service = self.breach_service.clone();
                         let module_health = self.module_health.clone();
+                        let executor = Arc::clone(&self.executor);
                         let start_time = self.start_time;
 
                         tokio::spawn(async move {
-                            let _ = Self::handle_connection(stream, storage, breach_service, module_health, start_time).await;
+                            let _ = Self::handle_connection(
+                                stream,
+                                storage,
+                                breach_service,
+                                module_health,
+                                executor,
+                                start_time,
+                            )
+                            .await;
                         });
                     }
                 }
@@ -200,6 +213,7 @@ impl IpcServer {
         storage: StorageManager,
         breach_service: Arc<BreachService>,
         module_health: ModuleHealth,
+        executor: Arc<Mutex<ActionExecutor>>,
         start_time: std::time::Instant,
     ) -> std::io::Result<()> {
         // Query peer credentials on Linux
@@ -220,6 +234,7 @@ impl IpcServer {
                     &storage,
                     &breach_service,
                     &module_health,
+                    &executor,
                     start_time,
                     peer_uid,
                 ),
@@ -240,11 +255,12 @@ impl IpcServer {
         Ok(())
     }
 
-    fn dispatch_request(
+    pub fn dispatch_request(
         req: IpcRequest,
         storage: &StorageManager,
         breach_service: &Arc<BreachService>,
         module_health: &ModuleHealth,
+        executor: &Arc<Mutex<ActionExecutor>>,
         start_time: std::time::Instant,
         peer_uid: u32,
     ) -> IpcResponse {
@@ -343,11 +359,40 @@ impl IpcServer {
                 if peer_uid != 0 {
                     Err("Permission denied: Restoring quarantined files requires administrative privileges (UID=0)".to_string())
                 } else {
-                    let id = req.params.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-                    storage
-                        .mark_quarantine_restored(id)
-                        .map(|entry| serde_json::to_value(entry).unwrap_or_default())
-                        .map_err(|e| e.to_string())
+                    (|| -> Result<serde_json::Value, String> {
+                        let id = req.params.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                        let entry = storage
+                            .get_quarantined_file(id)
+                            .map_err(|e| e.to_string())?;
+                        if let Some(entry) = entry {
+                            if entry.restored {
+                                return Err(format!(
+                                    "Quarantine record ID {id} is already marked as restored"
+                                ));
+                            }
+                            let mut exec = executor
+                                .lock()
+                                .map_err(|_| "ActionExecutor mutex poisoned".to_string())?;
+                            let restored_path = exec
+                                .restore_quarantined_file(Path::new(&entry.quarantine_path))
+                                .map_err(|e| format!("Failed to physically restore file: {e}"))?;
+                            drop(exec);
+
+                            let updated = storage
+                                .mark_quarantine_restored(id)
+                                .map_err(|e| e.to_string())?;
+                            let mut val = serde_json::to_value(updated).unwrap_or_default();
+                            if let Some(map) = val.as_object_mut() {
+                                map.insert(
+                                    "restored_to".to_string(),
+                                    serde_json::json!(restored_path.to_string_lossy()),
+                                );
+                            }
+                            Ok(val)
+                        } else {
+                            Ok(serde_json::Value::Null)
+                        }
+                    })()
                 }
             }
             "check_breach" => {
@@ -519,7 +564,16 @@ mod tests {
             .fs_sensor_active
             .store(true, Ordering::Relaxed);
 
-        let server = IpcServer::new(sock_path.clone(), storage, breach_service, module_health);
+        let executor = Arc::new(Mutex::new(ActionExecutor::new(
+            dir.path().join("quarantine"),
+        )));
+        let server = IpcServer::new(
+            sock_path.clone(),
+            storage,
+            breach_service,
+            module_health,
+            executor,
+        );
         let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
 
         let srv_task = tokio::spawn(async move {
@@ -587,11 +641,15 @@ mod tests {
             mock_provider,
         ));
 
+        let executor = Arc::new(Mutex::new(ActionExecutor::new(
+            dir.path().join("quarantine"),
+        )));
         let server = IpcServer::new(
             sock_path.clone(),
             storage,
             breach_service,
             ModuleHealth::default(),
+            executor,
         );
         let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
 
@@ -644,11 +702,15 @@ mod tests {
             .ebpf_sensor_active
             .store(false, Ordering::Relaxed);
 
+        let executor = Arc::new(Mutex::new(ActionExecutor::new(
+            dir.path().join("quarantine"),
+        )));
         let server = IpcServer::new(
             sock_path.clone(),
             storage,
             breach_service,
             module_health.clone(),
+            executor,
         );
         let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
 

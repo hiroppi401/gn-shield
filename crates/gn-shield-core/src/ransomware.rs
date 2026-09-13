@@ -21,6 +21,7 @@ pub struct ModificationEvent {
     pub is_high_entropy: bool,
     pub is_tier5_excluded: bool,
     pub is_honeypot: bool,
+    pub pid: Option<u32>,
 }
 
 /// Incident response containment actions for confirmed ransomware attacks.
@@ -106,6 +107,17 @@ impl RansomwareDetector {
         path: &Path,
         payload_entropy: Option<f32>,
     ) -> (Action, IncidentAction) {
+        self.record_and_evaluate_with_pid(path, payload_entropy, None)
+    }
+
+    /// Records a file modification event with process attribution PID
+    /// and evaluates against ransomware behavioral conditions.
+    pub fn record_and_evaluate_with_pid(
+        &mut self,
+        path: &Path,
+        payload_entropy: Option<f32>,
+        pid: Option<u32>,
+    ) -> (Action, IncidentAction) {
         self.prune_old_events();
 
         let entropy = match payload_entropy {
@@ -124,6 +136,7 @@ impl RansomwareDetector {
             is_high_entropy: high_entropy,
             is_tier5_excluded: is_tier5,
             is_honeypot,
+            pid,
         };
 
         self.history.push_back(event);
@@ -208,6 +221,25 @@ impl RansomwareDetector {
         (Action::Allow, IncidentAction::Allow)
     }
 
+    /// Returns the dominant / most frequent process PID attributed to suspicious high-entropy
+    /// writes or honeypot tampering within the current sliding window.
+    pub fn dominant_pid(&self) -> Option<u32> {
+        let mut counts = std::collections::HashMap::new();
+        for ev in self
+            .history
+            .iter()
+            .filter(|ev| ev.is_high_entropy || ev.is_honeypot)
+        {
+            if let Some(pid) = ev.pid {
+                *counts.entry(pid).or_insert(0usize) += 1;
+            }
+        }
+        counts
+            .into_iter()
+            .max_by_key(|&(_, count)| count)
+            .map(|(pid, _)| pid)
+    }
+
     /// Records a file modification event, evaluates against behavioral conditions,
     /// and immediately executes containment via ActionExecutor if IncidentAction::ContainAndTerminate is triggered.
     pub fn record_evaluate_and_execute(
@@ -221,10 +253,11 @@ impl RansomwareDetector {
         IncidentAction,
         Option<crate::executor::ExecutionReport>,
     ) {
-        let (action, incident) = self.record_and_evaluate(path, payload_entropy);
+        let (action, incident) = self.record_and_evaluate_with_pid(path, payload_entropy, pid);
+        let target_pid = pid.or_else(|| self.dominant_pid());
         let exec_report = match &incident {
             IncidentAction::ContainAndTerminate { .. } => {
-                executor.execute_incident_action(&incident, pid).ok()
+                executor.execute_incident_action(&incident, target_pid).ok()
             }
             _ => None,
         };

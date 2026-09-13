@@ -137,11 +137,11 @@ impl LinuxFsSensor {
                         break;
                     }
 
-                    if (meta.mask & libc::FAN_OPEN_EXEC_PERM) != 0 {
-                        let calling_pid = meta.pid as u32;
-                        let event_fd = meta.fd;
-                        let self_pid = std::process::id();
+                    let calling_pid = meta.pid as u32;
+                    let event_fd = meta.fd;
+                    let self_pid = std::process::id();
 
+                    if (meta.mask & libc::FAN_OPEN_EXEC_PERM) != 0 {
                         // 1. Recursive deadlock bypass: always allow GN-Shield's own PID
                         if calling_pid == self_pid {
                             let resp = libc::fanotify_response {
@@ -202,6 +202,36 @@ impl LinuxFsSensor {
                             path: target_path,
                             pid: calling_pid,
                         }));
+                    } else if (meta.mask & (libc::FAN_MODIFY | libc::FAN_CLOSE_WRITE)) != 0 {
+                        // Kernel-native file write/modification attribution
+                        if calling_pid == self_pid {
+                            if event_fd >= 0 {
+                                unsafe {
+                                    libc::close(event_fd);
+                                }
+                            }
+                            offset += meta.event_len as usize;
+                            continue;
+                        }
+
+                        let target_path = if event_fd >= 0 {
+                            let link_target = format!("/proc/self/fd/{event_fd}");
+                            let p = std::fs::read_link(&link_target)
+                                .unwrap_or_else(|_| PathBuf::from("unknown"));
+                            unsafe {
+                                libc::close(event_fd);
+                            }
+                            p
+                        } else {
+                            PathBuf::from("unknown")
+                        };
+
+                        if target_path != Path::new("unknown") {
+                            let _ = tx.send(Ok(FsEvent::Modified {
+                                path: target_path,
+                                pid: Some(calling_pid),
+                            }));
+                        }
                     }
                     offset += meta.event_len as usize;
                 }
@@ -242,13 +272,13 @@ impl LinuxFsSensor {
                         let path = event.paths.into_iter().next().unwrap_or_default();
                         match event.kind {
                             EventKind::Create(_) => {
-                                let _ = tx.send(Ok(FsEvent::Created(path)));
+                                let _ = tx.send(Ok(FsEvent::Created { path, pid: None }));
                             }
                             EventKind::Modify(_) => {
-                                let _ = tx.send(Ok(FsEvent::Modified(path)));
+                                let _ = tx.send(Ok(FsEvent::Modified { path, pid: None }));
                             }
                             EventKind::Remove(_) => {
-                                let _ = tx.send(Ok(FsEvent::Deleted(path)));
+                                let _ = tx.send(Ok(FsEvent::Deleted { path, pid: None }));
                             }
                             _ => {}
                         }
@@ -324,12 +354,15 @@ impl FileSystemSensor for LinuxFsSensor {
         if let Some(fd) = self.fanotify_fd {
             let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())
                 .map_err(|e| SensorError::InitError(e.to_string()))?;
-            // SAFETY: fanotify_mark on specified directory for execution permission events
+            // SAFETY: fanotify_mark on specified directory for execution permission and write events
             let res = unsafe {
                 libc::fanotify_mark(
                     fd,
                     libc::FAN_MARK_ADD,
-                    libc::FAN_OPEN_EXEC_PERM | libc::FAN_EVENT_ON_CHILD,
+                    libc::FAN_OPEN_EXEC_PERM
+                        | libc::FAN_MODIFY
+                        | libc::FAN_CLOSE_WRITE
+                        | libc::FAN_EVENT_ON_CHILD,
                     libc::AT_FDCWD,
                     c_path.as_ptr(),
                 )
@@ -450,7 +483,7 @@ mod tests {
         // Receive event from sensor
         let event = sensor.next_event().expect("next_event failed");
         match event {
-            FsEvent::Created(p) | FsEvent::Modified(p) => {
+            FsEvent::Created { path: p, .. } | FsEvent::Modified { path: p, .. } => {
                 assert_eq!(p.file_name(), file_path.file_name());
             }
             _ => panic!("Unexpected event: {event:?}"),

@@ -3,14 +3,14 @@
 
 use gn_shield_config::{DataBreachConfig, NotificationsConfig};
 use gn_shield_core::{
-    BreachService, InMemoryNotificationSink, IpcClient, IpcServer, MockRangeProvider, ModuleHealth,
-    NotificationBatcher, PromptAction, PromptEvent,
+    ActionExecutor, BreachService, InMemoryNotificationSink, IpcClient, IpcServer,
+    MockRangeProvider, ModuleHealth, NotificationBatcher, PromptAction, PromptEvent,
 };
 use gn_shield_rules::breach::KAnonymityChecker;
 use gn_shield_rules::sensitive_data::SensitiveDataKind;
 use gn_shield_storage::{AuditLogEntry, StorageManager};
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tempfile::tempdir;
 
@@ -153,11 +153,15 @@ async fn test_fase6_ipc_full_lifecycle_and_authorization() {
         .dns_filter_active
         .store(true, Ordering::Relaxed);
 
+    let executor = Arc::new(Mutex::new(ActionExecutor::new(
+        dir.path().join("quarantine"),
+    )));
     let server = IpcServer::new(
         socket_path.clone(),
         storage.clone(),
         breach_service,
         module_health,
+        executor,
     );
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
 

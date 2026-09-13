@@ -249,18 +249,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             while !fs_shutdown.load(Ordering::Relaxed) {
                 match fs_sensor.next_event() {
                     Ok(event) => match event {
-                        FsEvent::Created(path) | FsEvent::Modified(path) => {
+                        FsEvent::Created { path, pid } | FsEvent::Modified { path, pid } => {
                             if path.is_file() {
                                 // Evaluate file with FileScanner
                                 if let Ok(eval) = fs_scanner_ref.evaluate_file(&path) {
                                     if eval.action == Action::Block {
                                         eprintln!(
-                                            "🛡️ [Threat Detected] Malicious file: {} - {}",
+                                            "🛡️ [Threat Detected] Malicious file: {} (PID: {:?}) - {}",
                                             path.display(),
+                                            pid,
                                             eval.reason
                                         );
                                         if let Ok(mut exec) = fs_executor_ref.lock() {
-                                            if let Err(e) = exec.execute_scan_verdict(&eval, None) {
+                                            if let Err(e) = exec.execute_scan_verdict(&eval, pid) {
                                                 eprintln!("Error executing scan verdict remediation: {e}");
                                             }
                                         }
@@ -268,21 +269,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
 
                                 // Evaluate file modification with RansomwareDetector
-                                let (action, incident) = {
+                                let (action, incident, target_pid) = {
                                     if let Ok(mut detector) = fs_ransomware_ref.lock() {
-                                        detector.record_and_evaluate(&path, None)
+                                        let (act, inc) = detector.record_and_evaluate_with_pid(&path, None, pid);
+                                        let target = pid.or_else(|| detector.dominant_pid());
+                                        (act, inc, target)
                                     } else {
-                                        (Action::Allow, IncidentAction::Allow)
+                                        (Action::Allow, IncidentAction::Allow, pid)
                                     }
                                 };
                                 if action == Action::Block {
                                     eprintln!(
-                                        "🚨 [Ransomware Incident] Detected on {}",
-                                        path.display()
+                                        "🚨 [Ransomware Incident] Detected on {} (Target PID: {:?})",
+                                        path.display(),
+                                        target_pid
                                     );
                                     if let Ok(mut exec) = fs_executor_ref.lock() {
                                         if let Err(e) =
-                                            exec.execute_incident_action(&incident, None)
+                                            exec.execute_incident_action(&incident, target_pid)
                                         {
                                             eprintln!(
                                                 "Error executing ransomware remediation: {e}"
@@ -292,26 +296,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                         }
-                        FsEvent::Deleted(path) => {
-                            let (action, incident) = {
+                        FsEvent::Deleted { path, pid } => {
+                            let (action, incident, target_pid) = {
                                 if let Ok(mut detector) = fs_ransomware_ref.lock() {
-                                    detector.record_and_evaluate(&path, None)
+                                    let (act, inc) = detector.record_and_evaluate_with_pid(&path, None, pid);
+                                    let target = pid.or_else(|| detector.dominant_pid());
+                                    (act, inc, target)
                                 } else {
-                                    (Action::Allow, IncidentAction::Allow)
+                                    (Action::Allow, IncidentAction::Allow, pid)
                                 }
                             };
                             if action == Action::Block {
                                 eprintln!(
-                                    "🚨 [Ransomware Tampering Incident] Honeypot canary deleted: {}",
-                                    path.display()
+                                    "🚨 [Ransomware Tampering Incident] Honeypot canary deleted: {} (Target PID: {:?})",
+                                    path.display(),
+                                    target_pid
                                 );
                                 if let Ok(mut exec) = fs_executor_ref.lock() {
-                                    let _ = exec.execute_incident_action(&incident, None);
+                                    let _ = exec.execute_incident_action(&incident, target_pid);
                                 }
                             }
                         }
-                        FsEvent::ExecPermRequested { .. } => {
-                            // Execution permission evaluated synchronously via watchdog in fanotify worker
+                        FsEvent::ExecPermRequested { path, pid } => {
+                            // If execution is denied for a malicious binary, contain the calling dropper/parent process
+                            if let Ok(eval) = fs_scanner_ref.evaluate_file(&path) {
+                                if eval.action == Action::Block {
+                                    eprintln!(
+                                        "🛡️ [Exec Denied & Containment] Dropper/caller PID: {} attempted execution of: {}",
+                                        pid,
+                                        path.display()
+                                    );
+                                    if let Ok(mut exec) = fs_executor_ref.lock() {
+                                        let _ = exec.execute_scan_verdict(&eval, Some(pid));
+                                    }
+                                }
+                            }
                         }
                     },
                     Err(_) => {
@@ -569,6 +588,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         storage.clone(),
         breach_service.clone(),
         module_health.clone(),
+        Arc::clone(&executor),
     );
     let sock_display = socket_path.display().to_string();
 

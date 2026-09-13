@@ -277,6 +277,34 @@ impl StorageManager {
         Ok(results)
     }
 
+    pub fn get_quarantined_file(
+        &self,
+        id: i64,
+    ) -> std::result::Result<Option<QuarantinedFileEntry>, StorageError> {
+        let conn = self.conn.lock().map_err(|_| StorageError::Poisoned)?;
+        match conn.query_row(
+            "SELECT id, original_path, quarantine_path, sha256, quarantined_at, reason, restored
+             FROM quarantined_files WHERE id = ?1",
+            params![id],
+            |row| {
+                let restored_int: i32 = row.get(6)?;
+                Ok(QuarantinedFileEntry {
+                    id: row.get(0)?,
+                    original_path: row.get(1)?,
+                    quarantine_path: row.get(2)?,
+                    sha256: row.get(3)?,
+                    quarantined_at: row.get(4)?,
+                    reason: row.get(5)?,
+                    restored: restored_int != 0,
+                })
+            },
+        ) {
+            Ok(entry) => Ok(Some(entry)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(StorageError::Sqlite(e)),
+        }
+    }
+
     pub fn mark_quarantine_restored(
         &self,
         id: i64,
@@ -435,6 +463,13 @@ mod tests {
         assert_eq!(quarantined.len(), 1);
         assert_eq!(quarantined[0].id, qid);
         assert!(!quarantined[0].restored);
+
+        let fetched = storage.get_quarantined_file(qid).expect("get failed");
+        assert!(fetched.is_some());
+        let entry = fetched.unwrap();
+        assert_eq!(entry.id, qid);
+        assert_eq!(entry.original_path, "/home/user/malware.exe");
+        assert!(!entry.restored);
 
         let restored = storage
             .mark_quarantine_restored(qid)

@@ -32,12 +32,85 @@ impl From<std::io::Error> for SensorError {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FsEvent {
-    Created(std::path::PathBuf),
-    Modified(std::path::PathBuf),
-    Deleted(std::path::PathBuf),
-    ExecPermRequested { path: std::path::PathBuf, pid: u32 },
+    Created {
+        path: std::path::PathBuf,
+        pid: Option<u32>,
+    },
+    Modified {
+        path: std::path::PathBuf,
+        pid: Option<u32>,
+    },
+    Deleted {
+        path: std::path::PathBuf,
+        pid: Option<u32>,
+    },
+    ExecPermRequested {
+        path: std::path::PathBuf,
+        pid: u32,
+    },
+}
+
+impl FsEvent {
+    #[must_use]
+    pub fn created(path: std::path::PathBuf) -> Self {
+        Self::Created { path, pid: None }
+    }
+
+    #[must_use]
+    pub fn created_with_pid(path: std::path::PathBuf, pid: u32) -> Self {
+        Self::Created {
+            path,
+            pid: Some(pid),
+        }
+    }
+
+    #[must_use]
+    pub fn modified(path: std::path::PathBuf) -> Self {
+        Self::Modified { path, pid: None }
+    }
+
+    #[must_use]
+    pub fn modified_with_pid(path: std::path::PathBuf, pid: u32) -> Self {
+        Self::Modified {
+            path,
+            pid: Some(pid),
+        }
+    }
+
+    #[must_use]
+    pub fn deleted(path: std::path::PathBuf) -> Self {
+        Self::Deleted { path, pid: None }
+    }
+
+    #[must_use]
+    pub fn deleted_with_pid(path: std::path::PathBuf, pid: u32) -> Self {
+        Self::Deleted {
+            path,
+            pid: Some(pid),
+        }
+    }
+
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::Created { path, .. }
+            | Self::Modified { path, .. }
+            | Self::Deleted { path, .. }
+            | Self::ExecPermRequested { path, .. } => path,
+        }
+    }
+
+    #[must_use]
+    pub fn pid(&self) -> Option<u32> {
+        match self {
+            Self::Created { pid, .. } | Self::Modified { pid, .. } | Self::Deleted { pid, .. } => {
+                *pid
+            }
+            Self::ExecPermRequested { pid, .. } => Some(*pid),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -121,24 +194,31 @@ mod tests {
     fn test_sensor_event_instantiation() {
         let path = PathBuf::from("/tmp/test.txt");
 
-        let fs_created = FsEvent::Created(path.clone());
-        let fs_modified = FsEvent::Modified(path.clone());
-        let fs_deleted = FsEvent::Deleted(path.clone());
+        let fs_created = FsEvent::created(path.clone());
+        let fs_modified = FsEvent::modified_with_pid(path.clone(), 9999);
+        let fs_deleted = FsEvent::deleted(path.clone());
         let fs_exec = FsEvent::ExecPermRequested {
             path: path.clone(),
             pid: 1234,
         };
 
         match fs_created {
-            FsEvent::Created(p) => assert_eq!(p, path),
+            FsEvent::Created { path: p, pid } => {
+                assert_eq!(p, path);
+                assert_eq!(pid, None);
+            }
             _ => panic!("unexpected event"),
         }
-        assert!(matches!(fs_modified, FsEvent::Modified(_)));
-        assert!(matches!(fs_deleted, FsEvent::Deleted(_)));
+        assert_eq!(fs_modified.pid(), Some(9999));
+        assert!(matches!(fs_modified, FsEvent::Modified { .. }));
+        assert!(matches!(fs_deleted, FsEvent::Deleted { .. }));
+        assert_eq!(fs_deleted.pid(), None);
         assert!(matches!(
             fs_exec,
             FsEvent::ExecPermRequested { pid: 1234, .. }
         ));
+        assert_eq!(fs_exec.path(), path.as_path());
+        assert_eq!(fs_exec.pid(), Some(1234));
 
         let proc_event = ProcessEvent::Started {
             pid: 4321,

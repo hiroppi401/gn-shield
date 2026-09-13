@@ -120,41 +120,41 @@ async fn test_integrated_live_daemon_components_loop() {
             while !fs_shutdown.load(Ordering::Relaxed) {
                 match fs_sensor.next_event() {
                     Ok(event) => match event {
-                        FsEvent::Created(path) | FsEvent::Modified(path) => {
+                        FsEvent::Created { path, pid } | FsEvent::Modified { path, pid } => {
                             if path.is_file() {
                                 if let Ok(eval) = fs_scanner_ref.evaluate_file(&path) {
                                     if eval.action == Action::Block {
                                         if let Ok(mut exec) = fs_executor_ref.lock() {
-                                            let _ = exec.execute_scan_verdict(&eval, None);
+                                            let _ = exec.execute_scan_verdict(&eval, pid);
                                         }
                                     }
                                 }
 
                                 let (action, incident) = {
                                     if let Ok(mut detector) = fs_ransomware_ref.lock() {
-                                        detector.record_and_evaluate(&path, None)
+                                        detector.record_and_evaluate_with_pid(&path, None, pid)
                                     } else {
                                         (Action::Allow, IncidentAction::Allow)
                                     }
                                 };
                                 if action == Action::Block {
                                     if let Ok(mut exec) = fs_executor_ref.lock() {
-                                        let _ = exec.execute_incident_action(&incident, None);
+                                        let _ = exec.execute_incident_action(&incident, pid);
                                     }
                                 }
                             }
                         }
-                        FsEvent::Deleted(path) => {
+                        FsEvent::Deleted { path, pid } => {
                             let (action, incident) = {
                                 if let Ok(mut detector) = fs_ransomware_ref.lock() {
-                                    detector.record_and_evaluate(&path, None)
+                                    detector.record_and_evaluate_with_pid(&path, None, pid)
                                 } else {
                                     (Action::Allow, IncidentAction::Allow)
                                 }
                             };
                             if action == Action::Block {
                                 if let Ok(mut exec) = fs_executor_ref.lock() {
-                                    let _ = exec.execute_incident_action(&incident, None);
+                                    let _ = exec.execute_incident_action(&incident, pid);
                                 }
                             }
                         }
@@ -232,7 +232,7 @@ async fn test_integrated_live_daemon_components_loop() {
     let evil_file_path = temp.path().join("evil_trojan.bin");
     fs::write(&evil_file_path, evil_bytes).expect("write evil file");
     fs_tx
-        .send(Ok(FsEvent::Created(evil_file_path.clone())))
+        .send(Ok(FsEvent::created(evil_file_path.clone())))
         .expect("send evil created event");
 
     // Give the thread a moment to process and quarantine
@@ -250,7 +250,7 @@ async fn test_integrated_live_daemon_components_loop() {
     // Test B: Ransomware tampering in live loop via honeypot deletion
     fs::remove_file(&canary_file).expect("tamper canary");
     fs_tx
-        .send(Ok(FsEvent::Deleted(canary_file.clone())))
+        .send(Ok(FsEvent::deleted(canary_file.clone())))
         .expect("send canary deleted event");
 
     tokio::time::sleep(Duration::from_millis(50)).await;

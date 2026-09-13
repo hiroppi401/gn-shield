@@ -144,6 +144,28 @@ Scan worker pool wajib berjalan di prioritas scheduling rendah (`nice`/`ionice` 
 **Layer 5, update rule tidak memicu full disk rescan**:
 Saat ruleset diupdate lewat Update Service, JANGAN scan ulang seluruh disk secara otomatis sebagai efek samping. Update signature hanya memengaruhi file yang dilihat sensor SETELAH update terjadi, atau file yang statusnya masih tersimpan sebagai "belum final/dipertanyakan" di cache verdict. Full disk sweep berkala boleh ada sebagai fitur terpisah yang off by default dan harus dipicu eksplisit oleh user, bukan otomatis jalan tiap kali signature baru datang, supaya tidak menimbulkan disk read/write masif tanpa disadari.
 
+#### 3.4.2 Keputusan Arsitektur: Atribusi PID untuk Phased Containment pada Jalur Filesystem/Ransomware (Telah Diimplementasikan via Opsi 1)
+
+**Konteks Temuan & Gap Arsitektur:**
+Sesuai bagian 4 dokumen ini dan `docs/DECISION_ENGINE.md` bagian 9, deteksi confidence tinggi (honeypot berubah + anomali entropy shift + kecepatan modifikasi di atas threshold) wajib menjalankan alur containment (`contain_and_terminate_process()`) dengan membekukan (freeze via SIGSTOP) proses penyerang sebelum melakukan terminasi (SIGKILL) dan karantina file. Namun, pada implementasi awal, sensor filesystem Linux mengalirkan event melalui enum `FsEvent::Created/Modified/Deleted` yang hanya membawa path file tanpa informasi PID (`None`). Akibatnya, pemanggilan `execute_scan_verdict(&eval, None)` dan `execute_incident_action(&incident, None)` di loop daemon tidak pernah menghentikan proses yang sedang aktif mengenkripsi disk — file korban memang dikarantina, tetapi proses malware-nya sendiri tetap dibiarkan berjalan bebas.
+
+Untuk menutup celah ini dan menyediakan PID penyerang ke ActionExecutor, dua opsi teknis utama dianalisis:
+
+1. **Opsi 1: Atribusi Kernel-Native via Fanotify Event Metadata (`fanotify_event_metadata.pid` / `FAN_REPORT_PIDFD` / `FAN_REPORT_TID`)**
+   - **Mekanisme**: Fanotify di Linux secara native menyertakan PID proses pemanggil dalam struct `fanotify_event_metadata` per event. Sensor menangkap event `FAN_MODIFY | FAN_CLOSE_WRITE | FAN_OPEN_EXEC_PERM`, membaca PID pemanggil asli secara langsung dari kernel tanpa polling atau probing tambahan, dan meneruskannya ke `FsEvent`.
+   - **Resource Footprint saat Idle (`AGENTS.md` Prinsip 1)**: Sangat optimal. O(1) buffer read, tidak ada syscall traversal tambahan.
+   - **Risiko False-Positive (`AGENTS.md` Prinsip 2)**: Sangat rendah. PID diperoleh langsung dari konteks syscall kernel yang memicu modifikasi file, menghilangkan risiko salah tangkap proses developer non-jahat.
+   - **Kompatibilitas OS & Kernel**: Menggunakan standard Linux fanotify metadata (Linux >= 5.1).
+
+2. **Opsi 2: Heuristik User-Space Cross-Reference `/proc/[pid]/fd`** (Ditolak)
+   - Ditolak karena overhead CPU/IO masif saat burst modifikasi file dan tingginya risiko false-positive (TOCTOU) terhadap developer tools (IDE/compilers).
+
+**Keputusan & Implementasi Final**:
+Opsi 1 telah disetujui pemilik produk dan diimplementasikan:
+- `FsEvent` pada `gn-shield-sensors-common` diperluas dengan field `pid: Option<u32>`.
+- `LinuxFsSensor` membaca PID langsung dari `fanotify_event_metadata` dan mengalirkan event file modify/exec dengan atribut PID.
+- `RansomwareDetector` dan `main.rs` daemon loop meneruskan PID proses penyerang ke `ActionExecutor::execute_incident_action(&incident, target_pid)` dan `ActionExecutor::execute_scan_verdict(&eval, pid)`, memastikan proses penyerang di-contain (freeze SIGSTOP + terminate SIGKILL) dengan tetap mematuhi perlindungan safety guard (PID 0, PID 1, self-PID) dan circuit breaker.
+
 ### 3.5 Storage
 
 Semua state persisten (allowlist, hash cache, riwayat keputusan/audit log) disimpan lewat `rusqlite`. Satu file database per instalasi, lokasinya mengikuti konvensi OS masing masing (`$XDG_DATA_HOME` di Linux, `%APPDATA%` di Windows, `~/Library/Application Support` di macOS).
