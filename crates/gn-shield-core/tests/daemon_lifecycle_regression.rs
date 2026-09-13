@@ -296,3 +296,94 @@ async fn test_integrated_live_daemon_components_loop() {
     let _ = fs_thread.join();
     let _ = ip_thread.join();
 }
+
+#[tokio::test]
+async fn test_dns_proxy_supervisor_liveness_transitions_and_shutdown() {
+    let dns_engine = Arc::new(tokio::sync::RwLock::new(DnsFilterEngine::new(&[], 45)));
+    let dns_server = Arc::new(DnsProxyServer::new(
+        dns_engine,
+        "127.0.0.1:0".parse().unwrap(),
+        "[::1]:0".parse().unwrap(),
+        "1.1.1.1:53".parse().unwrap(),
+    ));
+
+    let dns_alive = Arc::new(AtomicBool::new(false));
+    let shutdown_signal = Arc::new(AtomicBool::new(false));
+    let cancel_token = tokio_util::sync::CancellationToken::new();
+
+    let dns_alive_clone = Arc::clone(&dns_alive);
+    let shutdown_clone = Arc::clone(&shutdown_signal);
+    let cancel_clone = cancel_token.clone();
+    let dns_clone = Arc::clone(&dns_server);
+
+    let supervisor = tokio::spawn(async move {
+        struct Guard(Arc<AtomicBool>);
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::Relaxed);
+            }
+        }
+        let _guard = Guard(Arc::clone(&dns_alive_clone));
+
+        match dns_clone.run_udp_listeners(cancel_clone.clone()).await {
+            Ok((mut v4_handle, mut v6_handle)) => {
+                dns_alive_clone.store(true, Ordering::Relaxed);
+
+                tokio::select! {
+                    res = &mut v4_handle => {
+                        if let Err(e) = res {
+                            eprintln!("Warning: DNS IPv4 listener task panicked: {e}");
+                        } else {
+                            eprintln!("Warning: DNS IPv4 listener task exited unexpectedly.");
+                        }
+                        cancel_clone.cancel();
+                        let _ = v6_handle.await;
+                    }
+                    res = &mut v6_handle => {
+                        if let Err(e) = res {
+                            eprintln!("Warning: DNS IPv6 listener task panicked: {e}");
+                        } else {
+                            eprintln!("Warning: DNS IPv6 listener task exited unexpectedly.");
+                        }
+                        cancel_clone.cancel();
+                        let _ = v4_handle.await;
+                    }
+                    _ = cancel_clone.cancelled() => {
+                        let _ = v4_handle.await;
+                        let _ = v6_handle.await;
+                    }
+                    _ = async {
+                        while !shutdown_clone.load(Ordering::Relaxed) {
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                        }
+                    } => {
+                        cancel_clone.cancel();
+                        let _ = v4_handle.await;
+                        let _ = v6_handle.await;
+                    }
+                }
+                dns_alive_clone.store(false, Ordering::Relaxed);
+            }
+            Err(e) => {
+                dns_alive_clone.store(false, Ordering::Relaxed);
+                eprintln!("Warning: DNS proxy server listener failed: {e}");
+            }
+        }
+    });
+
+    // 1. Give supervisor time to initialize
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        dns_alive.load(Ordering::Relaxed),
+        "dns_alive must be true while listeners run"
+    );
+
+    // 2. Test graceful shutdown path
+    cancel_token.cancel();
+    let res = tokio::time::timeout(Duration::from_secs(1), supervisor).await;
+    assert!(res.is_ok(), "Supervisor task must complete on cancellation");
+    assert!(
+        !dns_alive.load(Ordering::Relaxed),
+        "dns_alive must transition to false after shutdown"
+    );
+}

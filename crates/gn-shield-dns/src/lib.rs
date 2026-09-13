@@ -16,6 +16,7 @@ pub use detector::{IntegrationMode, ResolverDetectionResult, ResolverDetector, R
 pub use filter::{DnsFilterEngine, DnsFilterVerdict, DomainAllowlistRule};
 pub use psl_engine::PslEngine;
 pub use server::{DnsProxyMetrics, DnsProxyServer};
+pub use tokio_util::sync::CancellationToken;
 
 use gn_shield_config::DnsFilterConfig;
 use std::net::SocketAddr;

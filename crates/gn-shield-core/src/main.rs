@@ -9,9 +9,7 @@
 use gn_shield_config::GnShieldConfig;
 use gn_shield_core::breach_service::{BreachService, MockRangeProvider};
 use gn_shield_core::executor::ActionExecutor;
-use gn_shield_core::ipc::{
-    IpcServer, ModuleHealth, DEFAULT_SOCKET_PATH, FALLBACK_SOCKET_PATH,
-};
+use gn_shield_core::ipc::{IpcServer, ModuleHealth, DEFAULT_SOCKET_PATH, FALLBACK_SOCKET_PATH};
 use gn_shield_core::ransomware::{IncidentAction, RansomwareDetector};
 use gn_shield_core::{Action, FileScanner};
 use gn_shield_dns::{DnsFilterEngine, DnsProxyServer};
@@ -24,8 +22,9 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use tokio::signal;
+use tokio_util::sync::CancellationToken;
 
 fn get_config_path() -> PathBuf {
     let args: Vec<String> = env::args().collect();
@@ -459,22 +458,60 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let dns_alive = Arc::clone(&module_health.dns_filter_active);
     let dns_shutdown = Arc::clone(&shutdown_signal);
+    let mut dns_cancel_token: Option<CancellationToken> = None;
+    let mut dns_supervisor_task: Option<tokio::task::JoinHandle<()>> = None;
+
     if config.dns_filter.enabled && config.dns_filter.integration_mode != "disabled" {
         let dns_clone = Arc::clone(&dns_server);
-        tokio::spawn(async move {
+        let cancel_token = CancellationToken::new();
+        dns_cancel_token = Some(cancel_token.clone());
+
+        let supervisor = tokio::spawn(async move {
             struct Guard(Arc<AtomicBool>);
             impl Drop for Guard {
                 fn drop(&mut self) {
                     self.0.store(false, Ordering::Relaxed);
                 }
             }
-            match dns_clone.run_udp_listeners().await {
-                Ok(()) => {
-                    let _guard = Guard(Arc::clone(&dns_alive));
+            let _guard = Guard(Arc::clone(&dns_alive));
+
+            match dns_clone.run_udp_listeners(cancel_token.clone()).await {
+                Ok((mut v4_handle, mut v6_handle)) => {
                     dns_alive.store(true, Ordering::Relaxed);
                     println!("DnsProxyServer active on port {dns_port} (dual-stack IPv4/IPv6).");
-                    while !dns_shutdown.load(Ordering::Relaxed) {
-                        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+                    tokio::select! {
+                        res = &mut v4_handle => {
+                            if let Err(e) = res {
+                                eprintln!("Warning: DNS IPv4 listener task panicked: {e}");
+                            } else {
+                                eprintln!("Warning: DNS IPv4 listener task exited unexpectedly.");
+                            }
+                            cancel_token.cancel();
+                            let _ = v6_handle.await;
+                        }
+                        res = &mut v6_handle => {
+                            if let Err(e) = res {
+                                eprintln!("Warning: DNS IPv6 listener task panicked: {e}");
+                            } else {
+                                eprintln!("Warning: DNS IPv6 listener task exited unexpectedly.");
+                            }
+                            cancel_token.cancel();
+                            let _ = v4_handle.await;
+                        }
+                        _ = cancel_token.cancelled() => {
+                            let _ = v4_handle.await;
+                            let _ = v6_handle.await;
+                        }
+                        _ = async {
+                            while !dns_shutdown.load(Ordering::Relaxed) {
+                                tokio::time::sleep(Duration::from_millis(100)).await;
+                            }
+                        } => {
+                            cancel_token.cancel();
+                            let _ = v4_handle.await;
+                            let _ = v6_handle.await;
+                        }
                     }
                     dns_alive.store(false, Ordering::Relaxed);
                 }
@@ -484,6 +521,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         });
+        dns_supervisor_task = Some(supervisor);
     } else {
         println!("DnsProxyServer disabled in configuration.");
     }
@@ -494,15 +532,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.data_breach.clone(),
         breach_provider,
     ));
+    // NOTE: breach_checker_active currently reflects `config.data_breach.enabled` (configured capability),
+    // NOT a continuous background runtime loop health, since breach checks execute on-demand via IPC.
     if config.data_breach.enabled {
-        module_health.breach_checker_active.store(true, Ordering::Relaxed);
+        module_health
+            .breach_checker_active
+            .store(true, Ordering::Relaxed);
         println!("Breach detection service initialized (k-anonymity).");
     } else {
         println!("Breach detection service disabled in configuration.");
     }
 
+    // NOTE: browser_companion_active currently reflects `config.browser_extension.enabled` (configured capability),
+    // NOT a continuous background runtime loop health, since native messaging companions connect on-demand.
     if config.browser_extension.enabled {
-        module_health.browser_companion_active.store(true, Ordering::Relaxed);
+        module_health
+            .browser_companion_active
+            .store(true, Ordering::Relaxed);
     }
 
     // 10. Determine socket path and spawn IPC Server
@@ -551,7 +597,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(t) = ip_thread {
         let _ = t.join();
     }
-    tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+    if let Some(token) = dns_cancel_token {
+        token.cancel();
+    }
+    if let Some(task) = dns_supervisor_task {
+        let _ = task.await;
+    }
+    tokio::time::sleep(Duration::from_millis(150)).await;
 
     println!("GN-Shield daemon terminated cleanly.");
     Ok(())

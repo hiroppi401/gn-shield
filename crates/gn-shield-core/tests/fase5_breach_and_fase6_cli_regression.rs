@@ -3,8 +3,8 @@
 
 use gn_shield_config::{DataBreachConfig, NotificationsConfig};
 use gn_shield_core::{
-    BreachService, InMemoryNotificationSink, IpcClient, IpcServer, MockRangeProvider,
-    ModuleHealth, NotificationBatcher, PromptAction, PromptEvent,
+    BreachService, InMemoryNotificationSink, IpcClient, IpcServer, MockRangeProvider, ModuleHealth,
+    NotificationBatcher, PromptAction, PromptEvent,
 };
 use gn_shield_rules::breach::KAnonymityChecker;
 use gn_shield_rules::sensitive_data::SensitiveDataKind;
@@ -143,9 +143,15 @@ async fn test_fase6_ipc_full_lifecycle_and_authorization() {
         .expect("quarantine record failed");
 
     let module_health = ModuleHealth::default();
-    module_health.fs_sensor_active.store(true, Ordering::Relaxed);
-    module_health.ebpf_sensor_active.store(true, Ordering::Relaxed);
-    module_health.dns_filter_active.store(true, Ordering::Relaxed);
+    module_health
+        .fs_sensor_active
+        .store(true, Ordering::Relaxed);
+    module_health
+        .ebpf_sensor_active
+        .store(true, Ordering::Relaxed);
+    module_health
+        .dns_filter_active
+        .store(true, Ordering::Relaxed);
 
     let server = IpcServer::new(
         socket_path.clone(),

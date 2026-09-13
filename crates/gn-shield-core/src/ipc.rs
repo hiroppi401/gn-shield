@@ -38,9 +38,14 @@ pub struct ModuleStatus {
 
 /// Shared atomic health and liveness flags for active GN-Shield protection modules.
 ///
-/// Each flag is an `Arc<AtomicBool>` updated live by the owning thread/task runtime,
-/// ensuring that IPC status queries accurately reflect runtime health rather than
-/// static hardcoded assumptions.
+/// Each flag is an `Arc<AtomicBool>` queried during IPC status commands.
+///
+/// **Semantics Note:**
+/// - `fs_sensor_active`, `ebpf_sensor_active`, `ip_rep_filter_active`, and `dns_filter_active`
+///   reflect true runtime liveness (actively maintained by supervisor tasks and RAII drops).
+/// - `breach_checker_active` and `browser_companion_active` currently reflect whether the module
+///   is enabled in daemon configuration (`config.*.enabled`), NOT a continuous background thread
+///   health, as breach queries run on-demand via IPC and browser companions connect on-demand.
 #[derive(Debug, Clone)]
 pub struct ModuleHealth {
     pub fs_sensor_active: Arc<AtomicBool>,
@@ -210,7 +215,14 @@ impl IpcServer {
         while buf_reader.read_line(&mut line).await? > 0 {
             let req: Result<IpcRequest, _> = serde_json::from_str(&line);
             let resp = match req {
-                Ok(r) => Self::dispatch_request(r, &storage, &breach_service, &module_health, start_time, peer_uid),
+                Ok(r) => Self::dispatch_request(
+                    r,
+                    &storage,
+                    &breach_service,
+                    &module_health,
+                    start_time,
+                    peer_uid,
+                ),
                 Err(e) => IpcResponse {
                     id: 0,
                     result: None,
@@ -500,8 +512,12 @@ mod tests {
         ));
 
         let module_health = ModuleHealth::default();
-        module_health.dns_filter_active.store(true, Ordering::Relaxed);
-        module_health.fs_sensor_active.store(true, Ordering::Relaxed);
+        module_health
+            .dns_filter_active
+            .store(true, Ordering::Relaxed);
+        module_health
+            .fs_sensor_active
+            .store(true, Ordering::Relaxed);
 
         let server = IpcServer::new(sock_path.clone(), storage, breach_service, module_health);
         let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
@@ -615,10 +631,18 @@ mod tests {
 
         let module_health = ModuleHealth::default();
         // Simulate fs_sensor and dns_filter running alive, while ip_rep_filter is stopped
-        module_health.fs_sensor_active.store(true, Ordering::Relaxed);
-        module_health.dns_filter_active.store(true, Ordering::Relaxed);
-        module_health.ip_rep_filter_active.store(false, Ordering::Relaxed);
-        module_health.ebpf_sensor_active.store(false, Ordering::Relaxed);
+        module_health
+            .fs_sensor_active
+            .store(true, Ordering::Relaxed);
+        module_health
+            .dns_filter_active
+            .store(true, Ordering::Relaxed);
+        module_health
+            .ip_rep_filter_active
+            .store(false, Ordering::Relaxed);
+        module_health
+            .ebpf_sensor_active
+            .store(false, Ordering::Relaxed);
 
         let server = IpcServer::new(
             sock_path.clone(),
@@ -647,7 +671,9 @@ mod tests {
         assert_eq!(status1["modules"]["ebpf_sensor_active"], false);
 
         // 2. Simulate runtime crash / failure / exit: fs_sensor dies!
-        module_health.fs_sensor_active.store(false, Ordering::Relaxed);
+        module_health
+            .fs_sensor_active
+            .store(false, Ordering::Relaxed);
 
         // 3. Second status check: fs_sensor_active must dynamically transition to false
         let status2 = client

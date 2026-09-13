@@ -7,6 +7,8 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
+use tokio::task::JoinHandle;
+pub use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
 pub struct DnsProxyMetrics {
@@ -147,7 +149,15 @@ impl DnsProxyServer {
     }
 
     /// Spawns background UDP listeners for IPv4 and IPv6 dual-stack.
-    pub async fn run_udp_listeners(self: Arc<Self>) -> Result<(), String> {
+    ///
+    /// Returns the JoinHandles for the IPv4 and IPv6 listener tasks.
+    /// Both listener loops actively monitor the provided `CancellationToken` and gracefully
+    /// break upon cancellation to promptly release their underlying socket descriptors.
+    /// Any unexpected recv_from error is logged to stderr before terminating.
+    pub async fn run_udp_listeners(
+        self: Arc<Self>,
+        cancel: CancellationToken,
+    ) -> Result<(JoinHandle<()>, JoinHandle<()>), String> {
         let v4_sock = Arc::new(
             UdpSocket::bind(self.listen_ipv4)
                 .await
@@ -161,37 +171,69 @@ impl DnsProxyServer {
 
         let v4_server = Arc::clone(&self);
         let v4_sock_clone = Arc::clone(&v4_sock);
-        tokio::spawn(async move {
+        let v4_cancel = cancel.clone();
+        let v4_handle = tokio::spawn(async move {
             let mut buf = [0u8; 4096];
-            while let Ok((len, peer)) = v4_sock_clone.recv_from(&mut buf).await {
-                let query = buf[..len].to_vec();
-                let srv = Arc::clone(&v4_server);
-                let sock = Arc::clone(&v4_sock_clone);
-                tokio::spawn(async move {
-                    if let Ok(resp) = srv.process_query_bytes(&query).await {
-                        let _ = sock.send_to(&resp, peer).await;
+            loop {
+                tokio::select! {
+                    _ = v4_cancel.cancelled() => {
+                        break;
                     }
-                });
+                    res = v4_sock_clone.recv_from(&mut buf) => {
+                        match res {
+                            Ok((len, peer)) => {
+                                let query = buf[..len].to_vec();
+                                let srv = Arc::clone(&v4_server);
+                                let sock = Arc::clone(&v4_sock_clone);
+                                tokio::spawn(async move {
+                                    if let Ok(resp) = srv.process_query_bytes(&query).await {
+                                        let _ = sock.send_to(&resp, peer).await;
+                                    }
+                                });
+                            }
+                            Err(e) => {
+                                eprintln!("DNS IPv4 listener recv_from error, stopping: {e}");
+                                break;
+                            }
+                        }
+                    }
+                }
             }
         });
 
         let v6_server = Arc::clone(&self);
         let v6_sock_clone = Arc::clone(&v6_sock);
-        tokio::spawn(async move {
+        let v6_cancel = cancel.clone();
+        let v6_handle = tokio::spawn(async move {
             let mut buf = [0u8; 4096];
-            while let Ok((len, peer)) = v6_sock_clone.recv_from(&mut buf).await {
-                let query = buf[..len].to_vec();
-                let srv = Arc::clone(&v6_server);
-                let sock = Arc::clone(&v6_sock_clone);
-                tokio::spawn(async move {
-                    if let Ok(resp) = srv.process_query_bytes(&query).await {
-                        let _ = sock.send_to(&resp, peer).await;
+            loop {
+                tokio::select! {
+                    _ = v6_cancel.cancelled() => {
+                        break;
                     }
-                });
+                    res = v6_sock_clone.recv_from(&mut buf) => {
+                        match res {
+                            Ok((len, peer)) => {
+                                let query = buf[..len].to_vec();
+                                let srv = Arc::clone(&v6_server);
+                                let sock = Arc::clone(&v6_sock_clone);
+                                tokio::spawn(async move {
+                                    if let Ok(resp) = srv.process_query_bytes(&query).await {
+                                        let _ = sock.send_to(&resp, peer).await;
+                                    }
+                                });
+                            }
+                            Err(e) => {
+                                eprintln!("DNS IPv6 listener recv_from error, stopping: {e}");
+                                break;
+                            }
+                        }
+                    }
+                }
             }
         });
 
-        Ok(())
+        Ok((v4_handle, v6_handle))
     }
 }
 
@@ -256,6 +298,125 @@ mod tests {
             metrics.last_latency_micros < 50_000,
             "DNS proxy overhead must be sub-millisecond, got {} µs",
             metrics.last_latency_micros
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_udp_listeners_cancellation_shuts_down_both_tasks() {
+        let engine = Arc::new(RwLock::new(DnsFilterEngine::new(&[], 45)));
+        let server = Arc::new(DnsProxyServer::new(
+            engine,
+            "127.0.0.1:0".parse().unwrap(),
+            "[::1]:0".parse().unwrap(),
+            "1.1.1.1:53".parse().unwrap(),
+        ));
+
+        let cancel_token = CancellationToken::new();
+        let (v4_handle, v6_handle) = server
+            .run_udp_listeners(cancel_token.clone())
+            .await
+            .expect("bind listeners");
+
+        // Request graceful cancellation
+        cancel_token.cancel();
+
+        // Both handles must exit cleanly within a reasonable timeout (< 1s)
+        let res = tokio::time::timeout(tokio::time::Duration::from_secs(1), async {
+            let _ = tokio::join!(v4_handle, v6_handle);
+        })
+        .await;
+
+        assert!(
+            res.is_ok(),
+            "DNS listener tasks must terminate promptly after cancellation"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dns_listener_task_abort_detected_without_shutdown_signal() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let engine = Arc::new(RwLock::new(DnsFilterEngine::new(&[], 45)));
+        let server = Arc::new(DnsProxyServer::new(
+            engine,
+            "127.0.0.1:0".parse().unwrap(),
+            "[::1]:0".parse().unwrap(),
+            "1.1.1.1:53".parse().unwrap(),
+        ));
+
+        let cancel_token = CancellationToken::new();
+        let (v4_handle, v6_handle) = server
+            .run_udp_listeners(cancel_token.clone())
+            .await
+            .expect("bind listeners");
+
+        let v4_aborter = v4_handle.abort_handle();
+        let dns_alive = Arc::new(AtomicBool::new(false));
+        let dns_alive_clone = Arc::clone(&dns_alive);
+        let cancel_clone = cancel_token.clone();
+
+        // Supervisor pattern mirroring gn-shield-core main.rs
+        let supervisor = tokio::spawn(async move {
+            struct Guard(Arc<AtomicBool>);
+            impl Drop for Guard {
+                fn drop(&mut self) {
+                    self.0.store(false, Ordering::Relaxed);
+                }
+            }
+            let _guard = Guard(Arc::clone(&dns_alive_clone));
+            dns_alive_clone.store(true, Ordering::Relaxed);
+
+            let mut v4_handle = v4_handle;
+            let mut v6_handle = v6_handle;
+
+            tokio::select! {
+                res = &mut v4_handle => {
+                    if let Err(e) = res {
+                        eprintln!("simulated v4 crash: {e}");
+                    }
+                    cancel_clone.cancel();
+                    let _ = v6_handle.await;
+                }
+                res = &mut v6_handle => {
+                    if let Err(e) = res {
+                        eprintln!("simulated v6 crash: {e}");
+                    }
+                    cancel_clone.cancel();
+                    let _ = v4_handle.await;
+                }
+                _ = cancel_clone.cancelled() => {
+                    let _ = v4_handle.await;
+                    let _ = v6_handle.await;
+                }
+            }
+            dns_alive_clone.store(false, Ordering::Relaxed);
+        });
+
+        // Wait until supervisor marks active
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        assert!(
+            dns_alive.load(Ordering::Relaxed),
+            "dns_alive must be true while listeners are healthy"
+        );
+
+        // Simulate unexpected crash of IPv4 listener task
+        v4_aborter.abort();
+
+        // Wait for supervisor to finish
+        let res = tokio::time::timeout(tokio::time::Duration::from_secs(1), supervisor).await;
+        assert!(
+            res.is_ok(),
+            "Supervisor must exit promptly after v4 task aborts"
+        );
+
+        // dns_alive must immediately be false WITHOUT an explicit shutdown signal
+        assert!(
+            !dns_alive.load(Ordering::Relaxed),
+            "dns_alive must be false immediately after listener abort"
+        );
+        assert!(
+            cancel_token.is_cancelled(),
+            "cancel_token must be cancelled to tear down sibling v6 listener"
         );
     }
 }
