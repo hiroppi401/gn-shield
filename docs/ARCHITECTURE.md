@@ -166,6 +166,22 @@ Opsi 1 telah disetujui pemilik produk dan diimplementasikan:
 - `LinuxFsSensor` membaca PID langsung dari `fanotify_event_metadata` dan mengalirkan event file modify/exec dengan atribut PID.
 - `RansomwareDetector` dan `main.rs` daemon loop meneruskan PID proses penyerang ke `ActionExecutor::execute_incident_action(&incident, target_pid)` dan `ActionExecutor::execute_scan_verdict(&eval, pid)`, memastikan proses penyerang di-contain (freeze SIGSTOP + terminate SIGKILL) dengan tetap mematuhi perlindungan safety guard (PID 0, PID 1, self-PID) dan circuit breaker.
 
+**Confidence Gates Tambahan untuk Containment Berbasis PID:**
+Sesuai arahan produk, dua gerbang confidence tambahan diimplementasikan sebelum sistem mengeksekusi terminasi proses:
+
+1. **Repeat Offender Gate untuk Exec-Deny (`ExecDenyTracker`)**:
+   - Kernel `FAN_DENY` telah menggagalkan eksekusi binary terlarang di tingkat kernel, sehingga proses pemanggil (`calling_pid`) pada percobaan awal hanya berstatus mencoba dan gagal, bukan proses aktif yang sedang mengeksekusi payload.
+   - Ambang eskalasi: sliding window 60 detik dengan threshold 3 kali exec-deny dari PID yang sama (`ExecDenyTracker`).
+   - Percobaan ke-1 dan ke-2 dalam window hanya menolak eksekusi tanpa memicu containment (`execute_scan_verdict`) terhadap proses pemanggil.
+   - Pada percobaan ke-3 dari PID yang sama dalam window 60 detik, sistem mengeskalasi tindakan ke containment (freeze SIGSTOP + terminate SIGKILL) karena proses pemanggil diidentifikasi sebagai loader/dropper persisten.
+   - Event yang telah melewati batas 60 detik di-prune secara periodik sehingga riwayat memori tidak tumbuh tanpa batas.
+
+2. **Rasio Dominasi dan Lantai Minimum untuk `dominant_pid()`**:
+   - `dominant_pid()` pada `RansomwareDetector` hanya mengembalikan target PID untuk containment jika memenuhi dua syarat sekaligus:
+     1. **Rasio dominasi ≥ 50% (`DOMINANT_PID_MIN_RATIO = 0.5`)** dari total event dengan PID diketahui (`Some(pid)`) dalam window aktif (event dengan `pid: None` tidak dihitung sebagai pembilang maupun penyebut).
+     2. **Lantai minimum 3 event (`DOMINANT_PID_MIN_COUNT = 3`)** dari PID tersebut, guna mencegah containment prematur pada sample kecil (seperti 1 event = 100%).
+   - Jika kedua syarat tidak terpenuhi, `dominant_pid()` mengembalikan `None`. Alur penanganan insiden tetap menjalankan remedi di level berkas (karantina file terenkripsi dan honeypot), tetapi melewatkan terminasi proses (`process_report: None`), menjaga proses legitimate yang kebetulan beraktivitas tidak terbunuh secara salah.
+
 ### 3.5 Storage
 
 Semua state persisten (allowlist, hash cache, riwayat keputusan/audit log) disimpan lewat `rusqlite`. Satu file database per instalasi, lokasinya mengikuti konvensi OS masing masing (`$XDG_DATA_HOME` di Linux, `%APPDATA%` di Windows, `~/Library/Application Support` di macOS).

@@ -35,6 +35,15 @@ pub enum IncidentAction {
     },
 }
 
+/// Minimum ratio of events with known PID required for dominant PID process containment.
+/// Business rationale: Avoid containment on borderline cases where events are evenly spread
+/// across multiple processes. A single process must account for at least 50% of known-PID events.
+pub const DOMINANT_PID_MIN_RATIO: f32 = 0.5;
+
+/// Floor minimum event count required for dominant PID process containment.
+/// Business rationale: Prevents premature containment on low event counts (e.g. 1 event = 100% ratio).
+pub const DOMINANT_PID_MIN_COUNT: usize = 3;
+
 pub struct RansomwareDetector {
     config: RansomwareConfig,
     honeypot_manager: HoneypotManager,
@@ -221,10 +230,18 @@ impl RansomwareDetector {
         (Action::Allow, IncidentAction::Allow)
     }
 
-    /// Returns the dominant / most frequent process PID attributed to suspicious high-entropy
+    /// Returns the dominant process PID attributed to suspicious high-entropy
     /// writes or honeypot tampering within the current sliding window.
+    ///
+    /// Requires BOTH:
+    /// 1. Dominance ratio >= 50% (`DOMINANT_PID_MIN_RATIO`) of total events with known PID.
+    /// 2. Count floor >= 3 (`DOMINANT_PID_MIN_COUNT`) events attributed to that PID.
+    ///
+    /// Events without known PID (`pid: None`) are excluded from both numerator and denominator.
+    /// If counts are tied, deterministically selects the smaller PID.
     pub fn dominant_pid(&self) -> Option<u32> {
-        let mut counts = std::collections::HashMap::new();
+        let mut counts = std::collections::BTreeMap::new();
+        let mut total_with_pid = 0usize;
         for ev in self
             .history
             .iter()
@@ -232,11 +249,22 @@ impl RansomwareDetector {
         {
             if let Some(pid) = ev.pid {
                 *counts.entry(pid).or_insert(0usize) += 1;
+                total_with_pid += 1;
             }
         }
+        if total_with_pid == 0 {
+            return None;
+        }
+
         counts
             .into_iter()
-            .max_by_key(|&(_, count)| count)
+            .max_by(|(pid_a, count_a), (pid_b, count_b)| {
+                count_a.cmp(count_b).then_with(|| pid_b.cmp(pid_a))
+            })
+            .filter(|&(_, count)| {
+                count >= DOMINANT_PID_MIN_COUNT
+                    && (count as f32 / total_with_pid as f32) >= DOMINANT_PID_MIN_RATIO
+            })
             .map(|(pid, _)| pid)
     }
 
@@ -492,5 +520,130 @@ mod tests {
             }
             _ => panic!("Expected ContainedAndTerminated, got: {report:?}"),
         }
+    }
+
+    #[test]
+    fn test_dominant_pid_fifteen_events_nine_from_same_pid() {
+        let temp = tempdir().expect("tempdir failed");
+        let config = GnShieldConfig::default();
+        let honeypot = HoneypotManager::new();
+        let mut detector = RansomwareDetector::new(&config, honeypot);
+
+        let attacker_pid = 7777;
+        let other_pid = 8888;
+
+        // 9 events from attacker_pid (60% of 15, >= 3)
+        for i in 0..9 {
+            let p = temp.path().join(format!("enc_atk_{i}.bin"));
+            let _ = detector.record_and_evaluate_with_pid(&p, Some(7.8), Some(attacker_pid));
+        }
+
+        // 6 events from other_pid
+        for i in 0..6 {
+            let p = temp.path().join(format!("enc_oth_{i}.bin"));
+            let _ = detector.record_and_evaluate_with_pid(&p, Some(7.8), Some(other_pid));
+        }
+
+        // Attacker accounts for 9/15 (60%) >= 50% and 9 >= 3 floor
+        assert_eq!(
+            detector.dominant_pid(),
+            Some(attacker_pid),
+            "9/15 events must satisfy both MIN_RATIO (>=50%) and MIN_COUNT (>=3)"
+        );
+    }
+
+    #[test]
+    fn test_dominant_pid_fifteen_events_spread_evenly_returns_none() {
+        let temp = tempdir().expect("tempdir failed");
+        let config = GnShieldConfig::default();
+        let honeypot = HoneypotManager::new();
+        let mut detector = RansomwareDetector::new(&config, honeypot);
+
+        // 15 events spread across 5 distinct PIDs (3 events each = 20% each < 50%)
+        for i in 0..15 {
+            let pid = 1000 + (i % 5);
+            let p = temp.path().join(format!("spread_file_{i}.bin"));
+            let _ = detector.record_and_evaluate_with_pid(&p, Some(7.8), Some(pid));
+        }
+
+        assert_eq!(
+            detector.dominant_pid(),
+            None,
+            "When no PID accounts for >= 50%, dominant_pid must return None"
+        );
+    }
+
+    #[test]
+    fn test_dominant_pid_single_event_below_floor_returns_none() {
+        let temp = tempdir().expect("tempdir failed");
+        let config = GnShieldConfig::default();
+        let honeypot = HoneypotManager::new();
+        let mut detector = RansomwareDetector::new(&config, honeypot);
+
+        let p = temp.path().join("single_high_entropy.bin");
+        let _ = detector.record_and_evaluate_with_pid(&p, Some(7.9), Some(9999));
+
+        // 1/1 = 100% ratio, but count is 1 < MIN_COUNT (3)
+        assert_eq!(
+            detector.dominant_pid(),
+            None,
+            "1 event with 100% ratio must be rejected because count < MIN_COUNT floor"
+        );
+    }
+
+    #[test]
+    fn test_dominant_pid_tie_breaking_is_deterministic() {
+        let temp = tempdir().expect("tempdir failed");
+        let config = GnShieldConfig::default();
+        let honeypot = HoneypotManager::new();
+        let mut detector = RansomwareDetector::new(&config, honeypot);
+
+        // 4 events: 2 from PID 200, 2 from PID 100.
+        // Wait, 2 events is below MIN_COUNT (3)!
+        // To test tie-breaking where BOTH meet MIN_COUNT >= 3:
+        // 6 events: 3 from PID 200, 3 from PID 100 (each 50% exactly, and each >= 3 floor)
+        for i in 0..3 {
+            let p = temp.path().join(format!("tie_a_{i}.bin"));
+            let _ = detector.record_and_evaluate_with_pid(&p, Some(7.8), Some(200));
+        }
+        for i in 0..3 {
+            let p = temp.path().join(format!("tie_b_{i}.bin"));
+            let _ = detector.record_and_evaluate_with_pid(&p, Some(7.8), Some(100));
+        }
+
+        // Both PID 200 and PID 100 have count 3 (3/6 = 50% >= 50% and 3 >= 3).
+        // Deterministic tie-breaking selects the smaller PID (100).
+        assert_eq!(
+            detector.dominant_pid(),
+            Some(100),
+            "Deterministic tie-breaking must pick smaller PID when counts and ratios are tied"
+        );
+    }
+
+    #[test]
+    fn test_dominant_pid_ignores_none_pid_events() {
+        let temp = tempdir().expect("tempdir failed");
+        let config = GnShieldConfig::default();
+        let honeypot = HoneypotManager::new();
+        let mut detector = RansomwareDetector::new(&config, honeypot);
+
+        // 10 events with pid: None
+        for i in 0..10 {
+            let p = temp.path().join(format!("none_pid_{i}.bin"));
+            let _ = detector.record_and_evaluate_with_pid(&p, Some(7.8), None);
+        }
+
+        // 3 events with PID 4321
+        for i in 0..3 {
+            let p = temp.path().join(format!("with_pid_{i}.bin"));
+            let _ = detector.record_and_evaluate_with_pid(&p, Some(7.8), Some(4321));
+        }
+
+        // Total with PID is 3. PID 4321 has 3/3 = 100% of known PIDs and count 3 >= 3.
+        assert_eq!(
+            detector.dominant_pid(),
+            Some(4321),
+            "Events with pid: None must not dilute total_with_pid denominator"
+        );
     }
 }

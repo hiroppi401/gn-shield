@@ -8,6 +8,7 @@
 
 use gn_shield_config::GnShieldConfig;
 use gn_shield_core::breach_service::{BreachService, MockRangeProvider};
+use gn_shield_core::exec_deny::ExecDenyTracker;
 use gn_shield_core::executor::ActionExecutor;
 use gn_shield_core::ipc::{IpcServer, ModuleHealth, DEFAULT_SOCKET_PATH, FALLBACK_SOCKET_PATH};
 use gn_shield_core::ransomware::{IncidentAction, RansomwareDetector};
@@ -225,6 +226,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let fs_scanner_ref = Arc::clone(&file_scanner);
     let fs_ransomware_ref = Arc::clone(&ransomware_detector);
     let fs_executor_ref = Arc::clone(&executor);
+    let exec_deny_tracker = Arc::new(Mutex::new(ExecDenyTracker::new()));
+    let fs_exec_tracker_ref = Arc::clone(&exec_deny_tracker);
     let fs_shutdown = Arc::clone(&shutdown_signal);
     let fs_alive = Arc::clone(&module_health.fs_sensor_active);
     let fs_tx = fs_sensor.event_sender();
@@ -318,16 +321,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                         FsEvent::ExecPermRequested { path, pid } => {
-                            // If execution is denied for a malicious binary, contain the calling dropper/parent process
+                            // If execution is denied for a malicious binary, check repeat offender threshold before containing calling PID
                             if let Ok(eval) = fs_scanner_ref.evaluate_file(&path) {
                                 if eval.action == Action::Block {
-                                    eprintln!(
-                                        "🛡️ [Exec Denied & Containment] Dropper/caller PID: {} attempted execution of: {}",
-                                        pid,
-                                        path.display()
-                                    );
-                                    if let Ok(mut exec) = fs_executor_ref.lock() {
-                                        let _ = exec.execute_scan_verdict(&eval, Some(pid));
+                                    let is_repeat_offender = {
+                                        if let Ok(mut tracker) = fs_exec_tracker_ref.lock() {
+                                            tracker.record_deny(pid)
+                                        } else {
+                                            false
+                                        }
+                                    };
+
+                                    if is_repeat_offender {
+                                        eprintln!(
+                                            "🛡️ [Exec Denied & Containment] Dropper/caller PID: {} reached repeat-offender threshold (3 denies/60s), containing: {}",
+                                            pid,
+                                            path.display()
+                                        );
+                                        if let Ok(mut exec) = fs_executor_ref.lock() {
+                                            let _ = exec.execute_scan_verdict(&eval, Some(pid));
+                                        }
+                                    } else {
+                                        eprintln!(
+                                            "🛡️ [Exec Denied] Caller PID: {} attempted execution of blocked binary: {} (execution denied, containment deferred)",
+                                            pid,
+                                            path.display()
+                                        );
                                     }
                                 }
                             }
